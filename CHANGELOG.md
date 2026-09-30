@@ -19,6 +19,11 @@ The first launch-ready template. It will be tagged `v1.0.0` once the host and fo
 - 🔒 **Security:** Sending times out after 15 seconds, and requests go without cookies (`credentials: "omit"`) and with an origin-only referrer.
 - 🔒 **Security:** The spam-trap field was renamed to `hp_field` with `autocomplete="new-password"`, so autofill doesn't fill it and silently drop real messages. *(A manual autofill test is still required before launch.)*
 
+### Configuration
+- A mistake in `site-config.js` now only affects its own part of the page. A bad time (such as `"7am"`), a misspelled time zone or an unknown day name hides the "Open now" badge and hours table, shows "Please call us for our current opening hours" instead, and reports exactly where the mistake is in the console. The FAQ, menu and contact form keep working. Before, a bad time zone stopped every component, including the contact form, and a bad time silently showed the wrong status.
+- If `site-config.js` is missing or has a syntax error, the page reports it once and the navigation and contact form still work.
+- Times must be strict 24-hour `"HH:MM"`.
+
 ### Scripts and headers
 - 🔒 **Security:** Alpine 3.14.1 and the Focus plugin are self-hosted in `site/js/vendor/`. No script loads from a third-party domain.
 - 🔒 **Security:** Content-Security-Policy in `index.html` and `_headers`: scripts, styles and images only from the site itself, and no `data:` images.
@@ -38,3 +43,5 @@ The first launch-ready template. It will be tagged `v1.0.0` once the host and fo
 - 🔒 **Security:** Client mode checks the folder holds only site files: no dotfiles, notes, backups or source maps, and no SVGs with scripts.
 - 🔒 **Security:** Test pages can't contact any outside host. Every request to another host is answered by the test or blocked, so the tests never reach a client's real form endpoint.
 - The template tests build weakened copies of the site and require the client checks to catch each one.
+- Tests for the opening-hours calculations (`tests/hours.test.mjs`): past midnight, Saturday into Sunday, several ranges per day, no hours at all, time zones, and config validation.
+- The browser tests break `site-config.js` in six ways and check the rest of the page, and the contact form, keep working.

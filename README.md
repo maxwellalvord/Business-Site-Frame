@@ -115,6 +115,7 @@ site/                    THE WEBSITE: the only folder that is deployed or copied
   images/                Placeholder photos
 docs/                    Developer documentation for the Alpine components (not deployed)
 tests/browser-test.mjs   Automated browser tests (not deployed)
+tests/hours.test.mjs     Tests for the opening-hours calculations (not deployed)
 tests/site-policy.mjs    File checks for a site folder: headers, CSP, contents, vendor files
 CHANGELOG.md             Template releases; security-relevant changes are marked (not deployed)
 screenshots/             Images used in this README (not deployed)
@@ -126,10 +127,13 @@ README.md                This file (not deployed)
 Requires Node 22+ and Google Chrome. From the project root:
 
 ```sh
-node tests/browser-test.mjs
+node tests/browser-test.mjs            # the whole site, in headless Chrome
+node --test tests/hours.test.mjs       # the opening-hours calculations (Node only, no browser)
 ```
 
 If Chrome isn't at the default Windows location, set `CHROME_PATH` to its executable first. The tests open the site from `file://`, from a local server and from a server that sends the `_headers` headers, and they exercise every component, the contact form's failure paths and the deployment layout. They also fail if a byte of the self-hosted Alpine files changes, or if the two copies of the Content-Security-Policy drift apart. And they build deliberately weakened copies of the site, to prove that the client checks below catch each weakening.
+
+They also break `site-config.js` on purpose (a bad time, a misspelled time zone, a syntax error, a missing file) and check that only the affected part of the page stops, with one clear message in the console. The contact form must keep working in every case.
 
 **Testing a client's site.** Run the security and deployment checks against a client's copy of `site/`:
 

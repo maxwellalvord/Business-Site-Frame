@@ -11,9 +11,37 @@ const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 const DAY = 24 * 60;
 const WEEK = 7 * DAY;
 
+// "07:30" -> 450. Strict 24-hour "HH:MM", so a typo such as "7am" or "7:30"
+// is reported instead of silently producing NaN.
 function toMinutes(hhmm) {
-  const [h, m] = hhmm.split(":").map(Number);
-  return h * 60 + m;
+  const match = typeof hhmm === "string" && hhmm.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) throw new Error(`invalid time ${JSON.stringify(hhmm)}: use 24-hour "HH:MM", such as "07:30"`);
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+// Check the hours and time zone from site-config.js before using them, so a
+// mistake is reported with its location instead of failing somewhere later.
+function validateHours(hours, timeZone) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+  } catch {
+    throw new Error(`timeZone ${JSON.stringify(timeZone)} isn't a valid IANA time zone, such as "America/Los_Angeles"`);
+  }
+  if (typeof timeZone !== "string") throw new Error("timeZone is missing");
+  if (!hours || typeof hours !== "object" || Array.isArray(hours)) throw new Error("hours is missing or isn't an object");
+  for (const [key, ranges] of Object.entries(hours)) {
+    if (!DAY_KEYS.includes(key)) throw new Error(`hours.${key}: unknown day; use ${DAY_KEYS.join(", ")}`);
+    if (!Array.isArray(ranges)) throw new Error(`hours.${key} must be a list of { open, close } ranges, or [] when closed`);
+    ranges.forEach((range, i) => {
+      for (const field of ["open", "close"]) {
+        try {
+          toMinutes(range?.[field]);
+        } catch (err) {
+          throw new Error(`hours.${key}[${i}].${field}: ${err.message}`);
+        }
+      }
+    });
+  }
 }
 
 // Current minute-of-week in the business's time zone, not the visitor's.
@@ -80,7 +108,16 @@ function dayLabel(target, now) {
 // Alpine registrations
 // ---------------------------------------------------------------------------
 document.addEventListener("alpine:init", () => {
-  const site = window.SITE;
+  // Each component below copes with its own part of the config being missing
+  // or wrong, so one mistake can't take down the rest of the page (above all,
+  // the contact form).
+  const site = window.SITE || {};
+  if (!window.SITE) console.error("site-config.js didn't load, so the page is using empty settings.");
+  const listOrEmpty = (value, name) => {
+    if (Array.isArray(value)) return value;
+    if (value !== undefined) console.error(`${name} in site-config.js must be a list.`);
+    return [];
+  };
 
   // Mobile nav: just an open/closed flag. CSS decides whether the menu is a
   // dropdown (small screens) or always visible (wide screens).
@@ -96,27 +133,50 @@ document.addEventListener("alpine:init", () => {
 
   // Hours are a *store* rather than a component because two separate parts of
   // the page (the hero badge and the hours table) show the same live status.
+  // If the hours or time zone in the config are wrong, `available` stays false:
+  // the badge and table are hidden, a "please call us" line shows instead, and
+  // the problem is reported in the console.
   Alpine.store("hours", {
+    available: false,
     status: { isOpen: false, label: "", detail: "" },
     todayIndex: null,
-    // Table rows, Monday first. These never change, so build them once.
-    days: [1, 2, 3, 4, 5, 6, 0].map((i) => ({
-      index: i,
-      name: DAY_NAMES[i],
-      text: (site.hours[DAY_KEYS[i]] || [])
-        .map(({ open, close }) => `${formatTime(toMinutes(open))} – ${formatTime(toMinutes(close))}`)
-        .join(", ") || "Closed",
-    })),
+    days: [],
+    get unavailable() {
+      return !this.available;
+    },
 
     // Alpine calls a store's init() automatically.
     init() {
+      try {
+        validateHours(site.hours, site.timeZone);
+        // Table rows, Monday first. These never change, so build them once.
+        this.days = [1, 2, 3, 4, 5, 6, 0].map((i) => ({
+          index: i,
+          name: DAY_NAMES[i],
+          text: (site.hours[DAY_KEYS[i]] || [])
+            .map(({ open, close }) => `${formatTime(toMinutes(open))} – ${formatTime(toMinutes(close))}`)
+            .join(", ") || "Closed",
+        }));
+      } catch (err) {
+        // A missing config file is already reported above; don't add a second message.
+        if (window.SITE) console.error(`Opening hours are hidden because of a problem in site-config.js: ${err.message}`);
+        return;
+      }
       this.refresh();
       setInterval(() => this.refresh(), 60 * 1000);
     },
 
     refresh() {
-      const now = minuteOfWeekInZone(site.timeZone);
-      const result = getOpenStatus(site.hours, now);
+      let now, result;
+      try {
+        now = minuteOfWeekInZone(site.timeZone);
+        result = getOpenStatus(site.hours, now);
+      } catch (err) {
+        console.error("Opening hours are hidden because the status couldn't be worked out:", err);
+        this.available = false;
+        return;
+      }
+      this.available = true;
       this.todayIndex = Math.floor(now / DAY);
 
       if (result.isOpen) {
@@ -132,7 +192,7 @@ document.addEventListener("alpine:init", () => {
 
   // FAQ accordion: only one answer open at a time, tracked by index.
   Alpine.data("faq", () => ({
-    items: site.faqs,
+    items: listOrEmpty(site.faqs, "faqs"),
     openIndex: null,
     toggle(i) {
       this.openIndex = this.openIndex === i ? null : i;
@@ -146,13 +206,13 @@ document.addEventListener("alpine:init", () => {
   // and a lightbox for any item that has an image. `index` is kept when
   // closing so the image doesn't blank out during the fade-out transition.
   Alpine.data("showcase", () => ({
-    layout: site.showcase.layout,
-    categories: site.showcase.categories,
+    layout: site.showcase?.layout === "gallery" ? "gallery" : "menu",
+    categories: listOrEmpty(site.showcase?.categories, "showcase.categories").filter((c) => Array.isArray(c?.items)),
     activeCategory: 0,
     isOpen: false,
     index: 0,
     get items() {
-      return this.categories[this.activeCategory].items;
+      return this.categories[this.activeCategory]?.items || [];
     },
     // The lightbox steps through only the items that have a photo.
     get images() {
@@ -226,6 +286,7 @@ document.addEventListener("alpine:init", () => {
   // password in this URL would be readable by anyone). Case and surrounding
   // whitespace don't matter.
   function parseEndpoint(value) {
+    if (typeof value !== "string") return null;
     try {
       const url = new URL(value.trim());
       return url.protocol === "https:" && url.hostname && !url.username && !url.password ? url.href : null;

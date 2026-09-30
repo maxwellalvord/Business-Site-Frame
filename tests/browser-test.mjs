@@ -133,7 +133,9 @@ function isLocalTestUrl(url) {
   } catch { return false; }
 }
 
-async function newPage({ bypassCSP = false, configOverride = null, onRequest = null } = {}) {
+// configPatch: optional function that rewrites site-config.js before the page
+// sees it; returning null makes the file fail to load (404).
+async function newPage({ bypassCSP = false, configOverride = null, configPatch = null, onRequest = null } = {}) {
   const res = await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: "PUT" });
   const { webSocketDebuggerUrl } = await res.json();
   const c = await connect(webSocketDebuggerUrl);
@@ -157,7 +159,7 @@ async function newPage({ bypassCSP = false, configOverride = null, onRequest = n
   // or any other outside host.
   const blocked = [];
   const patterns = [{ urlPattern: "*", requestStage: "Request" }];
-  if (configOverride !== null) patterns.push({ urlPattern: "*site-config.js*", requestStage: "Response" });
+  if (configOverride !== null || configPatch) patterns.push({ urlPattern: "*site-config.js*", requestStage: "Response" });
   {
     await c.send("Fetch.enable", { patterns });
     c.on(async (m) => {
@@ -166,13 +168,17 @@ async function newPage({ bypassCSP = false, configOverride = null, onRequest = n
       if (responseStatusCode !== undefined && request.url.includes("site-config.js")) {
         const body = await c.send("Fetch.getResponseBody", { requestId });
         let src = body.base64Encoded ? Buffer.from(body.body, "base64").toString() : body.body;
+        if (configPatch) {
+          src = configPatch(src);
+          if (src === null) return c.send("Fetch.fulfillRequest", { requestId, responseCode: 404, body: "" });
+        }
         // If the endpoint can't be swapped out, fail the page load rather than
         // risk sending a test message to a client's real endpoint.
-        if (!ENDPOINT_RE.test(src)) {
+        if (configOverride !== null && !ENDPOINT_RE.test(src)) {
           console.log("      HARNESS: could not find formEndpoint in site-config.js; blocking page load");
           return c.send("Fetch.failRequest", { requestId, errorReason: "Aborted" });
         }
-        src = src.replace(ENDPOINT_RE, `formEndpoint: ${JSON.stringify(configOverride)}`);
+        if (configOverride !== null) src = src.replace(ENDPOINT_RE, `formEndpoint: ${JSON.stringify(configOverride)}`);
         await c.send("Fetch.fulfillRequest", { requestId, responseCode: 200,
           responseHeaders: [{ name: "Content-Type", value: "text/javascript" }], body: Buffer.from(src).toString("base64") });
       } else if (responseStatusCode !== undefined) {
@@ -399,6 +405,66 @@ async function formSecuritySuite() {
 
 }
 
+// Template mode only: a mistake in site-config.js must only affect the part of
+// the page it belongs to. In every case the rest of the page, and above all the
+// contact form, must keep working, and the mistake must be reported once in
+// the console.
+async function brokenConfigSuite() {
+  // Tolerate missing elements here, so a page that failed to start shows up as
+  // failed checks rather than stopping the run.
+  const SUBMIT_IF_PRESENT = `document.querySelector('.contact-form button[type=submit]')?.click()`;
+  const FILL_IF_PRESENT = (vals) => `document.getElementById('name') ? ${FILL(vals)} : false`;
+  const cases = [
+    ["opening time \"7am\"", (s) => s.replace('mon: [{ open: "07:00"', 'mon: [{ open: "7am"'), 'hours.mon[0].open: invalid time "7am"', { hours: false }],
+    ["misspelled time zone", (s) => s.replace('timeZone: "America/Los_Angeles"', 'timeZone: "America/Portland"'), 'timeZone "America/Portland" isn\'t a valid', { hours: false }],
+    ["unknown day name", (s) => s.replace("    mon: [", "    monday: ["), "hours.monday: unknown day", { hours: false }],
+    ["faqs isn't a list", (s) => s.replace("  faqs: [", '  faqs: "see below",\n  unusedFaqs: ['), "faqs in site-config.js must be a list", { faq: false }],
+    ["site-config.js fails to load", () => null, "site-config.js didn't load", { hours: false, faq: false, menu: false }],
+    // A typo that breaks the file's syntax: the browser reports the syntax
+    // error itself, then the page carries on as if the file were missing.
+    ["syntax error in site-config.js", (s) => s.replace("  faqs: [", "  faqs: [[;"), "site-config.js didn't load", { hours: false, faq: false, menu: false, syntaxError: true }],
+  ];
+  for (const [label, patch, expectedError, broken] of cases) {
+    const p = await newPage({ configPatch: patch });
+    await p.goto("http://localhost:8765/");
+    const e = p.evalJS;
+    const tag = `[broken config: ${label}]`;
+    const errors = p.logs.filter((l) => l.type === "error");
+    const exceptions = p.logs.filter((l) => l.type === "exception");
+    check(`${tag} reported once in the console`, errors.length === 1 && errors[0].text.includes(expectedError),
+      errors.map((x) => x.text).join(" | ") || "nothing reported");
+    if (broken.syntaxError) {
+      check(`${tag} only the file's own syntax error is uncaught`, exceptions.length === 1 && /SyntaxError/.test(exceptions[0].text), exceptions.map((x) => x.text).join(" | "));
+    } else {
+      check(`${tag} no uncaught exceptions`, exceptions.length === 0, exceptions.map((x) => x.text).join(" | "));
+    }
+    const visible = (sel) => `(() => { const el = document.querySelector(${JSON.stringify(sel)}); return !!el && getComputedStyle(el).display !== 'none'; })()`;
+    if (broken.hours === false) {
+      check(`${tag} hours badge and table hidden, fallback shown`,
+        !(await e(visible(".status-badge"))) && !(await e(visible(".hours-table"))) && (await e(visible(".hours-unavailable"))));
+    }
+    // Everything else still works.
+    await e(`document.querySelector('.nav-toggle')?.click()`); await sleep(100);
+    check(`${tag} nav still works`, await e(`document.getElementById('site-nav').classList.contains('is-open')`));
+    await p.key("Escape", "Escape", 27); await sleep(100);
+    if (broken.faq !== false) {
+      await e(`document.querySelector('.faq-question')?.click()`); await sleep(300);
+      check(`${tag} FAQ still works`, await e(`document.querySelector('.faq-question')?.getAttribute('aria-expanded') === 'true'`));
+    }
+    if (broken.menu !== false) {
+      check(`${tag} menu still shows items`, (await e(`document.querySelectorAll('.showcase-item').length`)) > 0);
+    }
+    if (broken.hours !== false) {
+      check(`${tag} hours still shown`, (await e(visible(".status-badge"))) && (await e(`document.querySelectorAll('.hours-table tbody tr').length`)) === 7);
+    }
+    await e(SUBMIT_IF_PRESENT); await sleep(200);
+    check(`${tag} contact form still validates`, (await e(`[...document.querySelectorAll('.field-error')].filter(x=>getComputedStyle(x).display!=='none').length`)) === 3);
+    await e(FILL_IF_PRESENT(GOOD)); await e(SUBMIT_IF_PRESENT); await sleep(300);
+    check(`${tag} contact form still submits`, (await e(STATUS)) === "is-success");
+    p.c.close();
+  }
+}
+
 // Template mode only: prove the client checks catch weakened copies. Each case
 // starts from a correctly configured client copy (a form endpoint, and its
 // origin added to connect-src in both CSP copies), which must pass. Then one
@@ -499,6 +565,7 @@ try {
     await componentSuite("file://", fileUrl);
     await componentSuite("localhost server", "http://localhost:8765/");
     await componentSuite("_headers applied", "http://localhost:8766/");
+    await brokenConfigSuite();
   } else {
     // Client-only: the client's own endpoint and page.
     clientConfigChecks();

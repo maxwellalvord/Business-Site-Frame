@@ -54,8 +54,9 @@
     <section class="hero">
       <div class="container">
         <!-- A bare `x-data` just tells Alpine to process this element; the
-             values come from the shared hours store ($store.hours). -->
-        <p class="status-badge" x-data x-cloak :class="$store.hours.status.isOpen ? 'is-open' : 'is-closed'">
+             values come from the shared hours store ($store.hours). Hidden if
+             the hours in site-config.js can't be read. -->
+        <p class="status-badge" x-data x-cloak x-show="$store.hours.available" :class="$store.hours.status.isOpen ? 'is-open' : 'is-closed'">
           <span class="status-dot" aria-hidden="true"></span>
           <strong x-text="$store.hours.status.label"></strong>
           <span x-show="$store.hours.status.detail" x-text="'· ' + $store.hours.status.detail"></span>
@@ -138,7 +139,9 @@
       <div class="container two-col">
         <div x-data>
           <h2>Hours</h2>
-          <table class="hours-table">
+          <!-- Shown only if the hours in site-config.js can't be read. -->
+          <p class="hours-unavailable" x-cloak x-show="$store.hours.unavailable">Please call us for our current opening hours.</p>
+          <table class="hours-table" x-show="$store.hours.available">
             <tbody>
               <template x-for="day in $store.hours.days" :key="day.index">
                 <tr :class="{ 'is-today': day.index === $store.hours.todayIndex }">
