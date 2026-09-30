@@ -33,4 +33,8 @@ The first launch-ready template. It will be tagged `v1.0.0` once the host and fo
 ### Tests
 - Automated headless-Chrome tests in `tests/browser-test.mjs`: every component, the form's failure paths, the security headers and the deployment layout.
 - 🔒 **Security:** The tests fail if a byte of the vendor files changes, if an unexpected file appears in `js/vendor/`, or if the two CSP copies drift apart.
-- `--client <site folder>` mode runs the security and deployment checks against a client's copy of `site/`, and never contacts the client's real form endpoint.
+- `--client <site folder>` mode runs the security and deployment checks against a client's copy of `site/`.
+- 🔒 **Security:** Client mode compares the client's headers and CSP with the template's own policy. Any other difference fails unless it's passed with `--allow`, and some protections (no `'unsafe-inline'`, no wildcard sources, `object-src`/`base-uri`/`frame-ancestors 'none'`) can't be relaxed at all. Security headers may only be set in the `/*` block of `_headers`.
+- 🔒 **Security:** Client mode checks the folder holds only site files: no dotfiles, notes, backups or source maps, and no SVGs with scripts.
+- 🔒 **Security:** Test pages can't contact any outside host. Every request to another host is answered by the test or blocked, so the tests never reach a client's real form endpoint.
+- The template tests build weakened copies of the site and require the client checks to catch each one.

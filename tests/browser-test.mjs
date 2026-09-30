@@ -6,52 +6,49 @@
 //
 // Client mode (security and deployment checks only, for a client's copy of
 // site/ with its own config and content; see README "Tests"):
-//   node tests/browser-test.mjs --client <path-to-client-site-folder>
+//   node tests/browser-test.mjs --client <path-to-client-site-folder> [--allow "<exception>" ...]
+// The client's policy is compared with the template's own site/ folder. Any
+// difference other than the form endpoint's origin in connect-src fails,
+// unless it's passed with --allow (record every exception in the client register).
 //
 // Set CHROME_PATH to use a Chrome/Chromium other than the default Windows
-// install location. No request ever reaches a real form endpoint: every form
-// test swaps in a fake endpoint and intercepts the request.
+// install location. Test pages can't reach anything outside this machine:
+// every request to another host is stubbed by a test or blocked.
 import { spawn } from "node:child_process";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import {
+  ENDPOINT_RE, VENDOR_SHA384, parseCsp, readPolicies, siteWideHeaders,
+  policyChecks, folderProblems, vendorProblems,
+} from "./site-policy.mjs";
 
-const CLIENT_MODE = process.argv[2] === "--client";
-if (CLIENT_MODE && !process.argv[3]) {
-  console.error("Usage: node tests/browser-test.mjs --client <path-to-client-site-folder>");
+const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const TEMPLATE_SITE = path.join(TESTS_DIR, "..", "site"); // the baseline for client mode
+const args = process.argv.slice(2);
+const CLIENT_MODE = args[0] === "--client";
+const ALLOWS = [];
+for (let i = CLIENT_MODE ? 2 : 1; i < args.length; i += 2) {
+  if (args[i] !== "--allow" || args[i + 1] === undefined) { console.error(`Unexpected argument: ${args[i]}`); process.exit(2); }
+  ALLOWS.push(args[i + 1]);
+}
+if (CLIENT_MODE && !args[1]) {
+  console.error('Usage: node tests/browser-test.mjs --client <path-to-client-site-folder> [--allow "<exception>" ...]');
   process.exit(2);
 }
-const ROOT = CLIENT_MODE ? null : path.resolve(process.argv[2] || path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
-const SITE = CLIENT_MODE ? path.resolve(process.argv[3]) : path.join(ROOT, "site"); // the only folder that is deployed
+if (!CLIENT_MODE && ALLOWS.length) { console.error("--allow only applies with --client"); process.exit(2); }
+const ROOT = CLIENT_MODE ? null : path.resolve(args[0] || path.join(TESTS_DIR, ".."));
+const SITE = CLIENT_MODE ? path.resolve(args[1]) : path.join(ROOT, "site"); // the only folder that is deployed
 
-// Expected SHA-384 of every file in site/js/vendor/. When upgrading Alpine,
-// update this table (see "Upgrading Alpine" in the docs).
-const VENDOR_SHA384 = {
-  "alpine-3.14.1.min.js": "l8f0VcPi/M1iHPv8egOnY/15TDwqgbOR1anMIJWvU6nLRgZVLTLSaNqi/TOoT5Fh",
-  "alpine-focus-3.14.1.min.js": "bKXNU7o2Y3Uk/F2PB6U0bMyGZf6pLDnePM70U7sTE3cXUQ+JLgzrr/kwipEh0p23",
-};
-// CSP directives that only work as an HTTP header, so appear only in _headers.
-const HEADER_ONLY_DIRECTIVES = ["frame-ancestors", "upgrade-insecure-requests"];
 const CHROME = process.env.CHROME_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const PORT = 9333;
-const ENDPOINT_RE = /formEndpoint\s*:\s*(["'`])(.*?)\1/;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- static server (optionally applying _headers) ----------
 // Behaves like the intended production host: serves only files inside site/,
 // never dotfiles, and answers bad requests with 400 instead of crashing.
-function parseHeadersFile() {
-  const lines = fs.readFileSync(path.join(SITE, "_headers"), "utf8").split(/\r?\n/);
-  const out = {};
-  for (const l of lines) {
-    const m = l.match(/^\s+([A-Za-z-]+):\s*(.+)$/);
-    if (m) out[m[1]] = m[2];
-  }
-  return out;
-}
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
 function resolveSitePath(urlPath) {
   let p;
@@ -69,7 +66,7 @@ function resolveSitePath(urlPath) {
   return { status: 200, file: f };
 }
 function startServer(port, applyHeaders) {
-  const hdrs = applyHeaders ? parseHeadersFile() : {};
+  const hdrs = applyHeaders ? siteWideHeaders(SITE) : {};
   const srv = http.createServer((req, res) => {
     const { status, file } = resolveSitePath(req.url);
     if (status !== 200) { res.writeHead(status); return res.end(); }
@@ -120,7 +117,21 @@ const chrome = spawn(CHROME, [
 ], { stdio: "ignore" });
 
 let results = [];
-const check = (name, ok, extra = "") => { results.push({ name, ok }); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  — " + extra : ""}`); };
+// Details are printed only when a check fails, so a PASS line never shows
+// text that reads like a problem.
+const check = (name, ok, failDetail = "") => {
+  results.push({ name, ok });
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${!ok && failDetail ? "\n        " + failDetail : ""}`);
+};
+const checkGroups = (prefix, groups) => { for (const g of groups) check(`${prefix} ${g.name}`, g.problems.length === 0, g.problems.join("\n        ")); };
+
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "client-site.test"]);
+function isLocalTestUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "file:" || (u.protocol === "http:" && LOCAL_HOSTS.has(u.hostname));
+  } catch { return false; }
+}
 
 async function newPage({ bypassCSP = false, configOverride = null, onRequest = null } = {}) {
   const res = await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: "PUT" });
@@ -140,10 +151,12 @@ async function newPage({ bypassCSP = false, configOverride = null, onRequest = n
   // Record CSP violations from inside the page (CDP-injected scripts aren't subject to CSP).
   await c.send("Page.addScriptToEvaluateOnNewDocument", { source:
     "window.__csp=[];document.addEventListener('securitypolicyviolation',e=>window.__csp.push(e.violatedDirective+' '+e.blockedURI));" });
-  // Every https request is intercepted: handed to the test's onRequest stub,
-  // or blocked. The site itself is served over http here, so this guarantees
-  // no test ever reaches a real form endpoint.
-  const patterns = [{ urlPattern: "https://*", requestStage: "Request" }];
+  // Every request is intercepted. Only the local test servers are reached;
+  // https requests go to the test's onRequest stub if it has one; everything
+  // else is blocked and recorded. So no test can reach a real form endpoint
+  // or any other outside host.
+  const blocked = [];
+  const patterns = [{ urlPattern: "*", requestStage: "Request" }];
   if (configOverride !== null) patterns.push({ urlPattern: "*site-config.js*", requestStage: "Response" });
   {
     await c.send("Fetch.enable", { patterns });
@@ -162,10 +175,16 @@ async function newPage({ bypassCSP = false, configOverride = null, onRequest = n
         src = src.replace(ENDPOINT_RE, `formEndpoint: ${JSON.stringify(configOverride)}`);
         await c.send("Fetch.fulfillRequest", { requestId, responseCode: 200,
           responseHeaders: [{ name: "Content-Type", value: "text/javascript" }], body: Buffer.from(src).toString("base64") });
-      } else if (request.url.startsWith("https://")) {
-        if (onRequest) await onRequest(c, m.params);
-        else await c.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" });
-      } else await c.send("Fetch.continueRequest", { requestId });
+      } else if (responseStatusCode !== undefined) {
+        await c.send("Fetch.continueRequest", { requestId });
+      } else if (isLocalTestUrl(request.url)) {
+        await c.send("Fetch.continueRequest", { requestId });
+      } else if (onRequest && request.url.startsWith("https://")) {
+        await onRequest(c, m.params);
+      } else {
+        blocked.push(request.url);
+        await c.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" });
+      }
     });
   }
   const evalJS = async (expr) => {
@@ -181,7 +200,7 @@ async function newPage({ bypassCSP = false, configOverride = null, onRequest = n
     await c.send("Page.navigate", { url });
     await sleep(1500);
   };
-  return { c, logs, evalJS, key, goto };
+  return { c, logs, blocked, evalJS, key, goto };
 }
 
 // Fill the form through real input events so x-model picks them up.
@@ -245,61 +264,8 @@ async function componentSuite(label, url) {
   const has404 = p.logs.some((l) => /404/.test(l.text));
   if (has404) console.log("      note: a 404 was logged (the harness server has no favicon.ico)");
   check(`[${label}] no console errors`, errs.length === 0, errs.map((x) => x.text).join(" | "));
+  check(`[${label}] no requests to other hosts`, p.blocked.length === 0, p.blocked.join(", "));
   p.c.close();
-}
-
-// ---------- checks on the files in site/ (no browser needed) ----------
-function parseCsp(csp) {
-  const map = {};
-  for (const d of csp.split(";").map((x) => x.trim()).filter(Boolean)) {
-    const [name, ...values] = d.split(/\s+/);
-    map[name] = values.join(" ");
-  }
-  return map;
-}
-function readCsps() {
-  const html = fs.readFileSync(path.join(SITE, "index.html"), "utf8");
-  const meta = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1] || "";
-  return { meta: parseCsp(meta), header: parseCsp(parseHeadersFile()["Content-Security-Policy"] || "") };
-}
-
-// Vendor files are exactly what was verified (hashes recorded in docs §2).
-function vendorChecks() {
-  const dir = path.join(SITE, "js", "vendor");
-  const present = fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [];
-  check("[vendor] js/vendor/ holds only the expected files", present.join() === Object.keys(VENDOR_SHA384).sort().join(), present.join(", "));
-  for (const [file, want] of Object.entries(VENDOR_SHA384)) {
-    const f = path.join(dir, file);
-    const got = fs.existsSync(f) ? crypto.createHash("sha384").update(fs.readFileSync(f)).digest("base64") : "missing";
-    check(`[vendor] SHA-384 of ${file}`, got === want, got === want ? "" : `got ${got}`);
-  }
-}
-
-// Security settings in the two CSP copies and _headers.
-function headerChecks() {
-  const { meta, header } = readCsps();
-  const hdrs = parseHeadersFile();
-  const headerComparable = Object.fromEntries(Object.entries(header).filter(([k]) => !HEADER_ONLY_DIRECTIVES.includes(k)));
-  const diff = [...new Set([...Object.keys(meta), ...Object.keys(headerComparable)])]
-    .filter((k) => meta[k] !== headerComparable[k])
-    .map((k) => `${k}: index.html="${meta[k] ?? "(missing)"}" _headers="${headerComparable[k] ?? "(missing)"}"`);
-  check("[csp] index.html and _headers policies match (apart from header-only directives)", diff.length === 0, diff.join("; "));
-  check("[csp] header-only directives are in _headers", HEADER_ONLY_DIRECTIVES.every((k) => k in header));
-  for (const [label, csp] of [["index.html", meta], ["_headers", header]]) {
-    check(`[csp] no 'unsafe-inline' (${label})`, !Object.values(csp).some((v) => v.includes("'unsafe-inline'")));
-    check(`[csp] object-src 'none' and base-uri 'none' (${label})`, csp["object-src"] === "'none'" && csp["base-uri"] === "'none'");
-    check(`[csp] no data: in img-src (${label})`, csp["img-src"] === "'self'", `img-src ${csp["img-src"]}`);
-  }
-  check("[headers] COOP same-origin", hdrs["Cross-Origin-Opener-Policy"] === "same-origin");
-  check("[headers] CORP same-origin", hdrs["Cross-Origin-Resource-Policy"] === "same-origin");
-  const hsts = hdrs["Strict-Transport-Security"] || "";
-  if (CLIENT_MODE) {
-    // A client may add includeSubDomains after the checklist confirmation.
-    const maxAge = Number(hsts.match(/^max-age=(\d+)/)?.[1] || 0);
-    check("[headers] HSTS set for at least a year", maxAge >= 31536000, hsts);
-  } else {
-    check("[headers] HSTS default has no includeSubDomains", hsts === "max-age=31536000", hsts);
-  }
 }
 
 // The client's own endpoint: set, a public https URL, and allowed by both CSPs.
@@ -308,14 +274,14 @@ function clientConfigChecks() {
   const value = src.match(ENDPOINT_RE)?.[2] ?? "";
   let url = null;
   try { url = new URL(value.trim()); } catch {}
-  check("[client config] formEndpoint is set", value.trim() !== "", "empty: the form shows an error on the live site");
+  check("[client config] formEndpoint is set", value.trim() !== "", "formEndpoint is empty: the form would show an error on the live site");
   check("[client config] formEndpoint is a full https:// URL with no credentials",
-    !!url && url.protocol === "https:" && !!url.hostname && !url.username && !url.password, value);
+    !!url && url.protocol === "https:" && !!url.hostname && !url.username && !url.password, `formEndpoint is "${value}"`);
   if (url) {
-    const { meta, header } = readCsps();
+    const { meta, header } = readPolicies(SITE);
     for (const [label, csp] of [["index.html", meta], ["_headers", header]]) {
-      const sources = (csp["connect-src"] || "").split(/\s+/);
-      check(`[client config] connect-src allows ${url.origin} (${label})`, sources.includes(url.origin) || sources.includes(url.origin + "/"), `connect-src ${csp["connect-src"]}`);
+      const sources = csp?.["connect-src"] || [];
+      check(`[client config] connect-src allows the form endpoint's origin (${label})`, sources.includes(url.origin), `connect-src is "${sources.join(" ")}", needs ${url.origin}`);
     }
   }
 }
@@ -329,8 +295,17 @@ async function clientSmoke() {
   check("[client page] Alpine started", await p.evalJS(`!!window.Alpine && Alpine.version === '3.14.1'`));
   const csp = await p.evalJS(`window.__csp`);
   check("[client page] no CSP violations on load", csp.length === 0, csp.join("; "));
-  const errs = p.logs.filter((l) => ["error", "exception", "log-error"].includes(l.type) && !/404/.test(l.text));
+  // The test blocks every outside request itself; those show up as
+  // ERR_BLOCKED_BY_CLIENT and are judged by the request check below instead.
+  const errs = p.logs.filter((l) => ["error", "exception", "log-error"].includes(l.type) && !/404|ERR_BLOCKED_BY_CLIENT/.test(l.text));
   check("[client page] no console errors on load", errs.length === 0, errs.map((x) => x.text).join(" | "));
+  // Requests to origins passed with --allow are expected (they're still
+  // blocked, so the test never contacts them). Anything else fails.
+  const allowedOrigins = ALLOWS.flatMap((a) => a.trim().split(/\s+/).slice(1)).filter((t) => /^https:\/\/[^/]+$/.test(t));
+  const expected = p.blocked.filter((u) => allowedOrigins.some((o) => u.startsWith(o + "/")));
+  const unexpected = p.blocked.filter((u) => !expected.includes(u));
+  check("[client page] no requests to other hosts on load, except --allow origins", unexpected.length === 0, `the page tried to load: ${unexpected.join(", ")}`);
+  if (expected.length) console.log(`      (requests to --allow origins, blocked by the test as expected: ${expected.join(", ")})`);
   p.c.close();
 }
 
@@ -424,6 +399,92 @@ async function formSecuritySuite() {
 
 }
 
+// Template mode only: prove the client checks catch weakened copies. Each case
+// starts from a correctly configured client copy (a form endpoint, and its
+// origin added to connect-src in both CSP copies), which must pass. Then one
+// change is made per case, and the checks must report at least one problem.
+function weakenedCopySuite() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "site-copy-"));
+  const edit = (dir, rel, fn) => { const f = path.join(dir, rel); fs.writeFileSync(f, fn(fs.readFileSync(f, "utf8"))); };
+  const bothCsps = (dir, fn) => {
+    edit(dir, "index.html", (s) => s.replace(/(http-equiv="Content-Security-Policy" content=")([^"]+)"/, (_, a, csp) => `${a}${fn(csp)}"`));
+    edit(dir, "_headers", (s) => s.replace(/(Content-Security-Policy: )(.+)/, (_, a, csp) => a + fn(csp)));
+  };
+  const makeClient = (name) => {
+    const dir = path.join(tmp, name);
+    fs.cpSync(SITE, dir, { recursive: true });
+    edit(dir, "js/site-config.js", (s) => s.replace(ENDPOINT_RE, 'formEndpoint: "https://forms.example/f/abc"'));
+    bothCsps(dir, (csp) => csp.replace("connect-src 'self'", "connect-src 'self' https://forms.example"));
+    return dir;
+  };
+  const problemsFor = (dir, allows = []) => [
+    ...policyChecks(dir, SITE, allows).groups.flatMap((g) => g.problems),
+    ...folderProblems(dir),
+    ...vendorProblems(dir),
+  ];
+
+  try {
+    const clean = makeClient("clean");
+    const cleanProblems = problemsFor(clean);
+    check("[weakened copies] a correctly configured client copy passes", cleanProblems.length === 0, cleanProblems.join("\n        "));
+
+    // Remove one header line from the "/*" block (spaces/tabs only, so the
+    // line break before it is kept and the file stays well-formed).
+    const headerLine = (name) => (dir) => edit(dir, "_headers", (s) => s.replace(new RegExp(`^[ \\t]+${name}:.*\\r?\\n`, "m"), ""));
+    // [label, change, text the reported problem must contain]
+    const cases = [
+      ["any https: script allowed (both copies)", (d) => bothCsps(d, (c) => c.replace("script-src 'self'", "script-src 'self' https:")), 'scheme-wide source "https:"'],
+      ["third-party script host added (both copies)", (d) => bothCsps(d, (c) => c.replace("script-src 'self'", "script-src 'self' https://cdn.example")), 'script-src adds "https://cdn.example"'],
+      ["frame-ancestors *", (d) => edit(d, "_headers", (s) => s.replace("frame-ancestors 'none'", "frame-ancestors *")), "frame-ancestors must be 'none'"],
+      ["X-Frame-Options removed", headerLine("X-Frame-Options"), 'X-Frame-Options is "(missing)"'],
+      ["X-Content-Type-Options removed", headerLine("X-Content-Type-Options"), 'X-Content-Type-Options is "(missing)"'],
+      ["Referrer-Policy removed", headerLine("Referrer-Policy"), 'Referrer-Policy is "(missing)"'],
+      ["Permissions-Policy removed", headerLine("Permissions-Policy"), 'Permissions-Policy is "(missing)"'],
+      ["Cross-Origin-Opener-Policy removed", headerLine("Cross-Origin-Opener-Policy"), 'Cross-Origin-Opener-Policy is "(missing)"'],
+      ["HSTS shortened to 5 minutes", (d) => edit(d, "_headers", (s) => s.replace(/Strict-Transport-Security: .*/, "Strict-Transport-Security: max-age=300")), 'Strict-Transport-Security is "max-age=300"'],
+      ["extra connect-src origin (both copies)", (d) => bothCsps(d, (c) => c.replace("connect-src 'self'", "connect-src 'self' https://evil.example")), 'connect-src adds "https://evil.example"'],
+      ["default-src removed (both copies)", (d) => bothCsps(d, (c) => c.replace("default-src 'self'; ", "")), "default-src was removed"],
+      ["'unsafe-inline' styles (both copies)", (d) => bothCsps(d, (c) => c.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'")), "style-src contains 'unsafe-inline'"],
+      ["CSP changed in _headers only", (d) => edit(d, "_headers", (s) => s.replace("img-src 'self'", "img-src 'self' https://img.example")), "img-src: index.html"],
+      ["second _headers block loosens the CSP for one page", (d) => edit(d, "_headers", (s) => s + "\n/index.html\n  Content-Security-Policy: default-src *\n"), '"/index.html" overrides Content-Security-Policy'],
+      ["header repeated in the \"/*\" block", (d) => edit(d, "_headers", (s) => s.replace(/(^[ \t]+X-Frame-Options: .*$)/m, "$1\n  X-Frame-Options: SAMEORIGIN")), "sets X-Frame-Options more than once"],
+      [".git/ folder copied in", (d) => { fs.mkdirSync(path.join(d, ".git")); fs.writeFileSync(path.join(d, ".git", "config"), "[core]\n"); }, ".git/: dotfiles"],
+      [".env file", (d) => fs.writeFileSync(path.join(d, ".env"), "API_KEY=x\n"), ".env: dotfiles"],
+      ["notes file at the top level", (d) => fs.writeFileSync(path.join(d, "NOTES.md"), "internal\n"), "NOTES.md: not part of the site"],
+      ["backup of site-config.js", (d) => fs.copyFileSync(path.join(d, "js", "site-config.js"), path.join(d, "js", "site-config.js.bak")), "site-config.js.bak: this kind of file"],
+      ["extra script in js/", (d) => fs.writeFileSync(path.join(d, "js", "analytics.js"), "\n"), "js/analytics.js: js/ may only hold"],
+      ["SVG with a script", (d) => fs.writeFileSync(path.join(d, "images", "logo.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'), "logo.svg: SVG contains a script"],
+      ["SVG with an event attribute", (d) => fs.writeFileSync(path.join(d, "images", "logo.svg"), '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>'), "logo.svg: SVG contains a script"],
+      ["vendor file changed by one byte", (d) => fs.appendFileSync(path.join(d, "js", "vendor", Object.keys(VENDOR_SHA384)[0]), " "), "SHA-384 is"],
+    ];
+    for (const [i, [label, weaken, expected]] of cases.entries()) {
+      const dir = makeClient(`case-${i}`);
+      weaken(dir);
+      const problems = problemsFor(dir);
+      check(`[weakened copies] fails: ${label}`, problems.some((p) => p.includes(expected)),
+        problems.length ? `expected a problem containing "${expected}"; got: ${problems.join(" | ")}` : "no problem reported");
+    }
+
+    // --allow: an intended exception passes only when it's passed explicitly,
+    // an unused exception fails, and the hard limits can't be allowed away.
+    const fonts = makeClient("fonts");
+    bothCsps(fonts, (c) => c.replace("style-src 'self'", "style-src 'self' https://fonts.example"));
+    check("[weakened copies] an extra source without --allow fails", problemsFor(fonts).length > 0, "no problem reported");
+    const allowed = problemsFor(fonts, ["style-src https://fonts.example"]);
+    check("[weakened copies] the same source with --allow passes", allowed.length === 0, allowed.join("\n        "));
+    check("[weakened copies] an unused --allow fails", problemsFor(clean, ["style-src https://fonts.example"]).length > 0, "no problem reported");
+    const inline = makeClient("inline");
+    bothCsps(inline, (c) => c.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"));
+    check("[weakened copies] 'unsafe-inline' fails even with --allow", problemsFor(inline, ["style-src 'unsafe-inline'"]).length > 0, "no problem reported");
+    const block = makeClient("block");
+    edit(block, "_headers", (s) => s + "\n/images/*\n  Cross-Origin-Resource-Policy: cross-origin\n");
+    check("[weakened copies] a per-path security header passes only with --allow",
+      problemsFor(block).length > 0 && problemsFor(block, ["header /images/* Cross-Origin-Resource-Policy"]).length === 0, "not handled as expected");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 try {
   for (let i = 0; i < 40; i++) { try { await fetch(`http://127.0.0.1:${PORT}/json/version`); break; } catch { await sleep(250); } }
   if (!fs.existsSync(path.join(SITE, "index.html"))) throw new Error(`No index.html in ${SITE}`);
@@ -445,9 +506,17 @@ try {
   }
 
   // Security and deployment checks: must pass for the template and every client copy.
-  vendorChecks();
-  headerChecks();
+  const vendor = vendorProblems(SITE);
+  check("[vendor] js/vendor/ holds exactly the verified Alpine files", vendor.length === 0, vendor.join("\n        "));
+  const policy = policyChecks(SITE, TEMPLATE_SITE, ALLOWS, { exactHsts: !CLIENT_MODE });
+  checkGroups("[policy]", policy.groups);
+  const folder = folderProblems(SITE);
+  check("[folder] only site files, nothing that shouldn't be public", folder.length === 0, folder.join("\n        "));
+  if (CLIENT_MODE && policy.usedAllows.length) {
+    console.log(`\n      Exceptions allowed with --allow (record each one, with the reason, in the client register):\n        ${policy.usedAllows.join("\n        ")}\n`);
+  }
   await formSecuritySuite();
+  if (!CLIENT_MODE) weakenedCopySuite();
   {
     const redirects = fs.readFileSync(path.join(SITE, "_redirects"), "utf8");
     check("[deploy layout] _redirects guards project files outside site/",

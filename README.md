@@ -96,9 +96,9 @@ Complete this for every new client site:
 - [ ] Client photos are JPG, PNG or WebP (no unsanitized SVGs), and every image has `alt` text
 - [ ] Placeholder contact details (`hello@example.com`, phone, address) are replaced
 - [ ] Keyboard-only walkthrough: skip link, nav, filters, lightbox, FAQ and form
-- [ ] **The security and deployment tests pass against this client's `site/` copy:** `node tests/browser-test.mjs --client <path-to-client-site>` (see [Tests](#tests)), **and** the client's `_headers` and CSP have been compared by hand with the template's. The only intended difference is the form provider in `connect-src`.
+- [ ] **The security and deployment tests pass against this client's `site/` copy:** `node tests/browser-test.mjs --client <path-to-client-site>` (see [Tests](#tests)). Any `--allow` exception is recorded, with the reason, in the client register.
 - [ ] **The Alpine version was checked** against the latest release and security advisories
-- [ ] **The site is added to the client register** with the template release it was copied from, its live URL and its form provider. Keep the register private, outside `site/`.
+- [ ] **The site is added to the client register** with the template release it was copied from, its live URL, its form provider and any `--allow` exceptions. Keep the register private, outside `site/`.
 
 ## Files
 
@@ -115,6 +115,7 @@ site/                    THE WEBSITE: the only folder that is deployed or copied
   images/                Placeholder photos
 docs/                    Developer documentation for the Alpine components (not deployed)
 tests/browser-test.mjs   Automated browser tests (not deployed)
+tests/site-policy.mjs    File checks for a site folder: headers, CSP, contents, vendor files
 CHANGELOG.md             Template releases; security-relevant changes are marked (not deployed)
 screenshots/             Images used in this README (not deployed)
 README.md                This file (not deployed)
@@ -128,7 +129,7 @@ Requires Node 22+ and Google Chrome. From the project root:
 node tests/browser-test.mjs
 ```
 
-If Chrome isn't at the default Windows location, set `CHROME_PATH` to its executable first. The tests open the site from `file://`, from a local server and from a server that sends the `_headers` headers, and they exercise every component, the contact form's failure paths and the deployment layout. They also fail if a byte of the self-hosted Alpine files changes, or if the two copies of the Content-Security-Policy drift apart.
+If Chrome isn't at the default Windows location, set `CHROME_PATH` to its executable first. The tests open the site from `file://`, from a local server and from a server that sends the `_headers` headers, and they exercise every component, the contact form's failure paths and the deployment layout. They also fail if a byte of the self-hosted Alpine files changes, or if the two copies of the Content-Security-Policy drift apart. And they build deliberately weakened copies of the site, to prove that the client checks below catch each weakening.
 
 **Testing a client's site.** Run the security and deployment checks against a client's copy of `site/`:
 
@@ -136,6 +137,22 @@ If Chrome isn't at the default Windows location, set `CHROME_PATH` to its execut
 node tests/browser-test.mjs --client path/to/client-site
 ```
 
-This mode skips the checks that depend on the sample menu, photos and FAQ, so it works with any client's content. It adds checks of the client's own setup: `formEndpoint` is a public `https://` URL with no credentials, and its origin is in `connect-src` in both CSP copies. The form tests always swap in a fake endpoint and block every outgoing request, so **running the tests never sends anything to the client's real form provider.**
+This mode skips the checks that depend on the sample menu, photos and FAQ, so it works with any client's content. It checks that:
 
-> **Known limitation:** client mode checks that the client's two CSP copies match each other and contain the key protections. It doesn't yet compare them against the template's policy, so a weakening made in *both* copies (for example a wider `script-src`) can still pass. Until that check is added, compare the client's `_headers` and CSP with the template's by hand, as the pre-launch checklist says.
+- **The security policy matches the template's.** The client's `_headers` and CSP are compared with the template's own `site/` folder. The only difference accepted without comment is the form endpoint's origin in `connect-src`. Every security header must be present with the template's value; HSTS may add `includeSubDomains`. Security headers may only be set in the `/*` block.
+- **Some protections can never be relaxed:** no `'unsafe-inline'`, no `*` or scheme-wide sources such as `https:`, and `object-src`, `base-uri` and `frame-ancestors` stay `'none'`.
+- **The folder holds only the site:** `index.html`, `404.html`, `_headers`, `_redirects`, `css/`, `js/` and `images/`. No dotfiles (`.git/`, `.env`), notes, backups or source maps; images are image files; SVGs contain no scripts.
+- **The Alpine files are the verified ones**, byte for byte.
+- **The client's form setup is right:** `formEndpoint` is a public `https://` URL with no credentials, and its origin is in `connect-src` in both CSP copies.
+- **The page loads cleanly** with the headers applied: no CSP violations, no console errors, and no requests to other hosts.
+
+**Exceptions.** If a client genuinely needs something the template doesn't allow, such as a web-font host, pass it explicitly and record it, with the reason, in the client register:
+
+```sh
+node tests/browser-test.mjs --client path/to/client-site --allow "font-src https://fonts.gstatic.com"
+node tests/browser-test.mjs --client path/to/client-site --allow "header /images/* Cross-Origin-Resource-Policy"
+```
+
+`--allow` can be repeated. A difference that isn't passed this way fails the run, and so does an `--allow` that isn't needed.
+
+**The tests never contact anything outside your machine.** The form tests swap in a fake endpoint, and every request from a test page to another host is either answered by the test itself or blocked. Running the tests never sends anything to the client's real form provider.
