@@ -1,0 +1,8 @@
+# Local working folders that must never be committed
+agents/
+
+# Local environment and OS files
+.env*
+.DS_Store
+Thumbs.db
+node_modules/

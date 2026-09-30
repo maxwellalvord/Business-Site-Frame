@@ -1,0 +1,3 @@
+# Self-hosted third-party files must stay byte-exact so their recorded
+# SHA-384 hashes keep matching (no line-ending conversion on checkout).
+site/js/vendor/** -text

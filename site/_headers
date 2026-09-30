@@ -1,0 +1,26 @@
+# Security headers for Netlify and Cloudflare Pages (both read this file from
+# the site root). Other hosts: set the same headers in their config
+# (vercel.json, Apache .htaccess, nginx server block). See "Deploying" in
+# README.md.
+#
+# The Content-Security-Policy must match the <meta> tag in index.html, plus the
+# header-only parts (frame-ancestors, upgrade-insecure-requests).
+# PER CLIENT: add the form provider's origin to connect-src, for example
+#   connect-src 'self' https://formspree.io;
+# and make the same change in index.html.
+#
+# HSTS: the default below applies to this domain only. Add "; includeSubDomains"
+# ONLY after confirming that every subdomain of the client's domain serves
+# HTTPS. Browsers remember HSTS for max-age (one year) and it can't be undone,
+# so an HTTP-only subdomain (old webmail, a booking system, a printer) would
+# stop working for up to a year.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000

@@ -1,0 +1,12 @@
+# Guard against publishing project files that live outside site/.
+# Only the site/ folder should ever be deployed, so these paths shouldn't
+# exist on a live site. If they're uploaded by mistake, these rules hide them.
+#
+# Netlify honours these rules. Cloudflare Pages does NOT support 404 rules in
+# _redirects and skips them; there, publishing only site/ is the protection.
+/.git/*          /404.html   404!
+/README.md       /404.html   404!
+/CHANGELOG.md    /404.html   404!
+/docs/*          /404.html   404!
+/tests/*         /404.html   404!
+/screenshots/*   /404.html   404!

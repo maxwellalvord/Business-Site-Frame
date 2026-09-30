@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harbor &amp; Pine Coffee</title>
+  <meta name="description" content="Neighborhood coffee shop and bakery on Pine St.">
+
+  <!-- Content Security Policy. Keep in sync with the copy in `_headers`.
+       When you set `formEndpoint` in js/site-config.js, add that service's
+       origin (e.g. https://formspree.io) to `connect-src` here AND in `_headers`,
+       or the form will fail with a CSP violation in the console.
+       'unsafe-eval' is required by the standard Alpine build. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'">
+
+  <link rel="stylesheet" href="css/styles.css">
+
+  <!-- Order matters: our components and Alpine plugins must load before Alpine
+       core. `defer` scripts run in document order after the HTML is parsed.
+       Alpine is self-hosted in js/vendor/; see "How the scripts load" in the
+       docs before upgrading it. -->
+  <script defer src="js/site-config.js"></script>
+  <script defer src="js/components.js"></script>
+  <script defer src="js/vendor/alpine-focus-3.14.1.min.js"></script>
+  <script defer src="js/vendor/alpine-3.14.1.min.js"></script>
+
+  <!-- SECURITY RULE: never use `x-html`. Render config values and user input
+       with `x-text` only, so the page has no script-injection (XSS) path. -->
+</head>
+<body id="top">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- ===================== Header / mobile nav ===================== -->
+  <header class="site-header" x-data="mobileNav" @keydown.escape.window="close()" @click.outside="close()">
+    <div class="container header-inner">
+      <a class="brand" href="#top">Harbor &amp; Pine</a>
+
+      <button class="nav-toggle" type="button" @click="toggle()" :aria-expanded="open" aria-controls="site-nav">
+        <span class="sr-only">Menu</span>
+        <span class="nav-toggle-bar" aria-hidden="true"></span>
+      </button>
+
+      <nav id="site-nav" class="site-nav" :class="{ 'is-open': open }" aria-label="Main">
+        <a href="#menu" @click="close()">Menu</a>
+        <a href="#hours" @click="close()">Hours</a>
+        <a href="#faq" @click="close()">FAQ</a>
+        <a href="#contact" @click="close()" class="nav-cta">Contact</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ===================== Hero ===================== -->
+    <section class="hero">
+      <div class="container">
+        <!-- A bare `x-data` just tells Alpine to process this element; the
+             values come from the shared hours store ($store.hours). -->
+        <p class="status-badge" x-data x-cloak :class="$store.hours.status.isOpen ? 'is-open' : 'is-closed'">
+          <span class="status-dot" aria-hidden="true"></span>
+          <strong x-text="$store.hours.status.label"></strong>
+          <span x-show="$store.hours.status.detail" x-text="'· ' + $store.hours.status.detail"></span>
+        </p>
+        <h1>Coffee, bread, and a good seat by the window.</h1>
+        <p class="lede">Small-batch roasts and pastries baked every morning on Pine St. since 2012.</p>
+        <div class="hero-actions">
+          <a class="button" href="#contact">Get in touch</a>
+          <a class="button button-ghost" href="#hours">See hours</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Menu / gallery + lightbox =====================
+         Content and layout ("menu" or "gallery") come from `showcase` in
+         js/site-config.js. Rename the heading and nav link to suit the
+         business (Menu, Services, Our Work, Gallery...). -->
+    <section id="menu" class="section" x-data="showcase">
+      <div class="container">
+        <h2>Menu</h2>
+
+        <!-- Category filters; hidden when there's only one category. -->
+        <div class="showcase-filters" role="group" aria-label="Categories" x-show="categories.length > 1">
+          <template x-for="(category, i) in categories" :key="category.name">
+            <button type="button" class="filter-button"
+                    :aria-pressed="activeCategory === i"
+                    @click="selectCategory(i)"
+                    x-text="category.name"></button>
+          </template>
+        </div>
+
+        <ul class="showcase-list" :class="'layout-' + layout">
+          <template x-for="item in items" :key="item.name">
+            <li class="showcase-item">
+              <!-- x-if (not x-show) so items without an image render no button at all. -->
+              <template x-if="item.image">
+                <button type="button" class="showcase-thumb" @click="open(item)">
+                  <img :src="item.image.src" :alt="item.image.alt" loading="lazy">
+                  <span class="sr-only" x-text="'Enlarge photo: ' + item.name"></span>
+                </button>
+              </template>
+              <div class="showcase-text">
+                <h3 class="showcase-name">
+                  <span x-text="item.name"></span>
+                  <span class="showcase-price" x-show="item.price" x-text="item.price"></span>
+                </h3>
+                <p class="showcase-description" x-show="item.description" x-text="item.description"></p>
+              </div>
+            </li>
+          </template>
+        </ul>
+      </div>
+
+      <!-- x-trap (from the Focus plugin) keeps Tab inside the dialog while it's
+           open, returns focus to the thumbnail on close, and `.noscroll` locks
+           page scrolling behind it. -->
+      <div class="lightbox" x-show="isOpen" x-cloak x-transition.opacity
+           x-trap.noscroll="isOpen"
+           role="dialog" aria-modal="true" aria-label="Image viewer"
+           @click.self="close()"
+           @keydown.escape="close()"
+           @keydown.arrow-right="next()"
+           @keydown.arrow-left="prev()">
+        <button type="button" class="lightbox-close" @click="close()" aria-label="Close">&times;</button>
+        <button type="button" class="lightbox-nav lightbox-prev" x-show="images.length > 1" @click="prev()" aria-label="Previous image">&#8249;</button>
+        <figure class="lightbox-figure">
+          <!-- `?.` because a category may have no photos, leaving `current` undefined. -->
+          <img :src="current?.image.src" :alt="current?.image.alt">
+          <figcaption>
+            <span x-text="caption"></span>
+            <span class="lightbox-count" x-text="`${index + 1} / ${images.length}`"></span>
+          </figcaption>
+        </figure>
+        <button type="button" class="lightbox-nav lightbox-next" x-show="images.length > 1" @click="next()" aria-label="Next image">&#8250;</button>
+      </div>
+    </section>
+
+    <!-- ===================== Hours + location ===================== -->
+    <section id="hours" class="section section-alt">
+      <div class="container two-col">
+        <div x-data>
+          <h2>Hours</h2>
+          <table class="hours-table">
+            <tbody>
+              <template x-for="day in $store.hours.days" :key="day.index">
+                <tr :class="{ 'is-today': day.index === $store.hours.todayIndex }">
+                  <th scope="row" x-text="day.name"></th>
+                  <td x-text="day.text"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h2>Find us</h2>
+          <address>
+            123 Pine St.<br>
+            Portland, OR 97204<br>
+            <a href="tel:+15035550123">(503) 555-0123</a><br>
+            <a href="mailto:hello@example.com">hello@example.com</a>
+          </address>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== FAQ accordion ===================== -->
+    <section id="faq" class="section">
+      <div class="container narrow" x-data="faq">
+        <h2>Frequently asked questions</h2>
+        <div class="faq-list">
+          <template x-for="(item, i) in items" :key="i">
+            <div class="faq-item">
+              <h3>
+                <button type="button" class="faq-question"
+                        :id="'faq-q-' + i"
+                        :aria-expanded="isOpen(i)"
+                        :aria-controls="'faq-a-' + i"
+                        @click="toggle(i)">
+                  <span x-text="item.q"></span>
+                  <span class="faq-icon" aria-hidden="true"></span>
+                </button>
+              </h3>
+              <div class="faq-answer" role="region"
+                   :id="'faq-a-' + i"
+                   :aria-labelledby="'faq-q-' + i"
+                   x-show="isOpen(i)" x-transition>
+                <p x-text="item.a"></p>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== Contact form ===================== -->
+    <section id="contact" class="section section-alt">
+      <div class="container narrow">
+        <h2>Contact us</h2>
+        <!-- `novalidate` turns off the browser's built-in popups so our own
+             messages are shown instead. -->
+        <form class="contact-form" x-data="contactForm" @submit.prevent="submit()" novalidate>
+          <div class="field">
+            <label for="name">Name</label>
+            <input id="name" type="text" autocomplete="name" required maxlength="100"
+                   x-model="fields.name"
+                   @blur="validateField('name')"
+                   @input="errors.name && validateField('name')"
+                   :aria-invalid="!!errors.name" aria-describedby="name-error">
+            <p id="name-error" class="field-error" x-show="errors.name" x-text="errors.name"></p>
+          </div>
+
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" type="email" autocomplete="email" required maxlength="254"
+                   x-model="fields.email"
+                   @blur="validateField('email')"
+                   @input="errors.email && validateField('email')"
+                   :aria-invalid="!!errors.email" aria-describedby="email-error">
+            <p id="email-error" class="field-error" x-show="errors.email" x-text="errors.email"></p>
+          </div>
+
+          <div class="field">
+            <label for="phone">Phone <span class="optional">(optional)</span></label>
+            <input id="phone" type="tel" autocomplete="tel" maxlength="30"
+                   x-model="fields.phone"
+                   @blur="validateField('phone')"
+                   @input="errors.phone && validateField('phone')"
+                   :aria-invalid="!!errors.phone" aria-describedby="phone-error">
+            <p id="phone-error" class="field-error" x-show="errors.phone" x-text="errors.phone"></p>
+          </div>
+
+          <div class="field">
+            <label for="message">Message</label>
+            <textarea id="message" rows="5" required maxlength="5000"
+                      x-model="fields.message"
+                      @blur="validateField('message')"
+                      @input="errors.message && validateField('message')"
+                      :aria-invalid="!!errors.message" aria-describedby="message-error"></textarea>
+            <p id="message-error" class="field-error" x-show="errors.message" x-text="errors.message"></p>
+          </div>
+
+          <!-- Honeypot: hidden from sighted users and screen readers. The
+               name and `autocomplete="new-password"` stop browsers and
+               password managers from autofilling it (which would silently
+               drop a real customer's message). -->
+          <div class="honeypot" aria-hidden="true">
+            <label for="hp_field">Leave this field empty</label>
+            <input id="hp_field" name="hp_field" type="text" tabindex="-1" autocomplete="new-password" x-model="fields.hp">
+          </div>
+
+          <button class="button" type="submit" :disabled="status === 'sending'"
+                  x-text="status === 'sending' ? 'Sending…' : 'Send message'">Send message</button>
+
+          <p class="form-status" role="status">
+            <span x-show="status === 'success'" x-cloak class="is-success">Thanks! We'll get back to you within a day.</span>
+            <span x-show="status === 'error'" x-cloak class="is-error">Something went wrong. Please call us or try again.</span>
+          </p>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; <span x-data x-text="new Date().getFullYear()"></span> Harbor &amp; Pine Coffee</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,766 @@
+/* ==========================================================================
+   Theme — change these to rebrand the template.
+   ========================================================================== */
+:root {
+  --color-bg: #fbf8f3;
+  --color-bg-alt: #f1ebe1;
+  --color-text: #2b2420;
+  --color-muted: #6b5f57;
+  --color-brand: #1f5f5b;
+  --color-brand-dark: #154541;
+  --color-accent: #c8743b;
+  --color-border: #ddd3c6;
+  --color-open: #2e7d4f;
+  --color-closed: #a63d32;
+  --color-error: #a63d32;
+
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-heading: Georgia, "Times New Roman", serif;
+
+  --radius: 10px;
+  --container: 1100px;
+  --header-height: 64px;
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Hide Alpine-controlled elements until Alpine has initialised them. */
+[x-cloak] {
+  display: none !important;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: var(--header-height);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+  line-height: 1.2;
+  margin: 0 0 0.75em;
+}
+
+h2 {
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+a {
+  color: var(--color-brand);
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.container {
+  max-width: var(--container);
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.narrow {
+  max-width: 720px;
+}
+
+.section {
+  padding: 64px 0;
+}
+
+.section-alt {
+  background: var(--color-bg-alt);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 16px;
+  top: -100px;
+  z-index: 100;
+  padding: 8px 12px;
+  background: var(--color-brand);
+  color: #fff;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
+.button {
+  display: inline-block;
+  padding: 12px 22px;
+  border: 2px solid var(--color-brand);
+  border-radius: var(--radius);
+  background: var(--color-brand);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--color-brand-dark);
+  border-color: var(--color-brand-dark);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.button-ghost {
+  background: transparent;
+  color: var(--color-brand);
+}
+
+.button-ghost:hover {
+  background: var(--color-brand);
+  color: #fff;
+}
+
+/* ==========================================================================
+   Header + mobile nav
+   ========================================================================== */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--header-height);
+}
+
+.brand {
+  font-family: var(--font-heading);
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+/* Three-line "hamburger" drawn with one element and two pseudo-elements. */
+.nav-toggle {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.nav-toggle-bar,
+.nav-toggle-bar::before,
+.nav-toggle-bar::after {
+  display: block;
+  width: 24px;
+  height: 2px;
+  background: var(--color-text);
+  transition: transform 0.2s, background-color 0.2s;
+}
+
+.nav-toggle-bar {
+  position: relative;
+}
+
+.nav-toggle-bar::before,
+.nav-toggle-bar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+
+.nav-toggle-bar::before {
+  top: -7px;
+}
+
+.nav-toggle-bar::after {
+  top: 7px;
+}
+
+/* Turn the hamburger into an X when open. */
+.nav-toggle[aria-expanded="true"] .nav-toggle-bar {
+  background: transparent;
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-bar::before {
+  transform: translateY(7px) rotate(45deg);
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-bar::after {
+  transform: translateY(-7px) rotate(-45deg);
+}
+
+/* Small screens: the nav is a dropdown panel under the header. */
+.site-nav {
+  display: none;
+  position: absolute;
+  top: var(--header-height);
+  left: 0;
+  right: 0;
+  flex-direction: column;
+  padding: 8px 16px 16px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: 0 8px 16px rgb(0 0 0 / 0.06);
+}
+
+.site-nav.is-open {
+  display: flex;
+}
+
+.site-nav a {
+  padding: 12px 0;
+  color: var(--color-text);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.site-nav a:hover {
+  color: var(--color-brand);
+}
+
+/* Wide screens: the toggle disappears and the nav is always shown inline. */
+@media (min-width: 760px) {
+  .nav-toggle {
+    display: none;
+  }
+
+  .site-nav,
+  .site-nav.is-open {
+    display: flex;
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    gap: 28px;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    background: none;
+  }
+
+  .site-nav a {
+    padding: 0;
+  }
+
+  .site-nav .nav-cta {
+    padding: 8px 16px;
+    border-radius: var(--radius);
+    background: var(--color-brand);
+    color: #fff;
+  }
+}
+
+/* ==========================================================================
+   Hero + open/closed badge
+   ========================================================================== */
+.hero {
+  padding: 72px 0 80px;
+}
+
+.hero h1 {
+  max-width: 16ch;
+  font-size: clamp(2.2rem, 6vw, 3.6rem);
+}
+
+.lede {
+  max-width: 48ch;
+  font-size: 1.2rem;
+  color: var(--color-muted);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.status-badge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 20px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  font-size: 0.95rem;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.status-badge.is-open .status-dot {
+  background: var(--color-open);
+}
+
+.status-badge.is-open strong {
+  color: var(--color-open);
+}
+
+.status-badge.is-closed .status-dot {
+  background: var(--color-closed);
+}
+
+.status-badge.is-closed strong {
+  color: var(--color-closed);
+}
+
+/* ==========================================================================
+   Menu / gallery showcase + lightbox
+   ========================================================================== */
+.showcase-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.filter-button {
+  padding: 8px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.filter-button:hover {
+  border-color: var(--color-brand);
+}
+
+.filter-button[aria-pressed="true"] {
+  border-color: var(--color-brand);
+  background: var(--color-brand);
+  color: #fff;
+}
+
+.showcase-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.showcase-thumb {
+  display: block;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: zoom-in;
+  background: none;
+}
+
+.showcase-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s;
+}
+
+.showcase-thumb:hover img {
+  transform: scale(1.04);
+}
+
+.showcase-name {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 1.05rem;
+}
+
+.showcase-description {
+  margin: 4px 0 0;
+  color: var(--color-muted);
+  font-size: 0.95rem;
+}
+
+/* "menu" layout: rows with an optional small photo, name and price on one
+   line, description underneath. Two columns on wider screens. */
+.layout-menu {
+  gap: 0 48px;
+}
+
+@media (min-width: 760px) {
+  .layout-menu {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.layout-menu .showcase-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.layout-menu .showcase-thumb {
+  width: 72px;
+  height: 72px;
+}
+
+.layout-menu .showcase-text {
+  flex: 1;
+}
+
+.layout-menu .showcase-name {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.showcase-price {
+  flex: none;
+  color: var(--color-brand);
+}
+
+/* "gallery" layout: responsive photo grid with captions below. */
+.layout-gallery {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: 20px 12px;
+}
+
+.layout-gallery .showcase-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  margin-bottom: 10px;
+}
+
+.layout-gallery .showcase-name {
+  font-weight: 500;
+}
+
+.layout-gallery .showcase-price {
+  margin-left: 8px;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 16px;
+  background: rgb(15 12 10 / 0.92);
+}
+
+.lightbox-figure {
+  margin: 0;
+  max-width: min(1000px, 100%);
+  color: #fff;
+}
+
+.lightbox-figure img {
+  max-height: 75vh;
+  margin: 0 auto;
+  border-radius: 6px;
+}
+
+.lightbox-figure figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.lightbox-count {
+  opacity: 0.7;
+}
+
+.lightbox-close,
+.lightbox-nav {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.12);
+  color: #fff;
+  font-size: 2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lightbox-close:hover,
+.lightbox-nav:hover {
+  background: rgb(255 255 255 / 0.25);
+}
+
+.lightbox-close {
+  top: 12px;
+  right: 12px;
+}
+
+.lightbox-nav {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.lightbox-prev {
+  left: 8px;
+}
+
+.lightbox-next {
+  right: 8px;
+}
+
+/* On phones, move the arrows to the bottom so they don't cover the image. */
+@media (max-width: 600px) {
+  .lightbox-nav {
+    top: auto;
+    bottom: 12px;
+    transform: none;
+  }
+}
+
+/* ==========================================================================
+   Hours + location
+   ========================================================================== */
+.two-col {
+  display: grid;
+  gap: 40px;
+}
+
+@media (min-width: 760px) {
+  .two-col {
+    grid-template-columns: 3fr 2fr;
+  }
+}
+
+.hours-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.hours-table th,
+.hours-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+}
+
+.hours-table th {
+  font-weight: 500;
+}
+
+.hours-table tr.is-today {
+  background: #fff;
+  font-weight: 700;
+}
+
+.hours-table tr.is-today th::after {
+  content: " (today)";
+  font-weight: 400;
+  color: var(--color-muted);
+}
+
+address {
+  font-style: normal;
+  line-height: 1.9;
+}
+
+/* ==========================================================================
+   FAQ accordion
+   ========================================================================== */
+.faq-item {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.faq-item h3 {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 1.1rem;
+}
+
+.faq-question {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 18px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Plus sign that rotates into an X when the item is open. */
+.faq-icon {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  transition: transform 0.2s;
+}
+
+.faq-icon::before,
+.faq-icon::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 0;
+  width: 16px;
+  height: 2px;
+  background: currentColor;
+}
+
+.faq-icon::after {
+  transform: rotate(90deg);
+}
+
+.faq-question[aria-expanded="true"] .faq-icon {
+  transform: rotate(45deg);
+}
+
+.faq-answer p {
+  margin: 0 0 18px;
+  color: var(--color-muted);
+}
+
+/* ==========================================================================
+   Contact form
+   ========================================================================== */
+.contact-form {
+  display: grid;
+  gap: 20px;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.optional {
+  font-weight: 400;
+  color: var(--color-muted);
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.field [aria-invalid="true"] {
+  border-color: var(--color-error);
+  box-shadow: 0 0 0 1px var(--color-error);
+}
+
+.field-error {
+  margin: 6px 0 0;
+  color: var(--color-error);
+  font-size: 0.95rem;
+}
+
+.honeypot {
+  position: absolute;
+  left: -9999px;
+}
+
+.contact-form .button {
+  justify-self: start;
+}
+
+.form-status {
+  margin: 0;
+  min-height: 1.6em;
+}
+
+.form-status .is-success {
+  color: var(--color-open);
+}
+
+.form-status .is-error {
+  color: var(--color-error);
+}
+
+/* ==========================================================================
+   Footer
+   ========================================================================== */
+.site-footer {
+  padding: 32px 0;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-size: 0.95rem;
+}
+
+/* ==========================================================================
+   Respect reduced-motion preferences
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
