@@ -10,7 +10,7 @@ Versions follow `MAJOR.MINOR.PATCH`. Each release is a git tag (`v1.0.0`, and so
 
 ## [1.0.0] — Unreleased
 
-The first launch-ready template. It will be tagged `v1.0.0` once the host and form provider are chosen, a manual autofill test of the contact form is done, and a staging deploy passes a header scan.
+The first launch-ready template. It will be tagged `v1.0.0` once the host and form provider are chosen, the spam trap is passed on to the form provider's own spam filtering, a live demo passes a header scan and receives a real test submission, and the contact form's autofill and the page's screen-reader behaviour have been checked by hand.
 
 ### Contact form
 - 🔒 **Security:** On a live host, an empty `formEndpoint` now shows an error instead of a fake "Thanks!" and doesn't log the visitor's details to the console. The console fallback only works on `file://` and `localhost`.
@@ -40,8 +40,12 @@ The first launch-ready template. It will be tagged `v1.0.0` once the host and fo
 - Automated headless-Chrome tests in `tests/browser-test.mjs`: every component, the form's failure paths, the security headers and the deployment layout.
 - 🔒 **Security:** The tests fail if a byte of the vendor files changes, if an unexpected file appears in `js/vendor/`, or if the two CSP copies drift apart.
 - `--client <site folder>` mode runs the security and deployment checks against a client's copy of `site/`.
-- 🔒 **Security:** Client mode compares the client's headers and CSP with the template's own policy. Any other difference fails unless it's passed with `--allow`, and some protections (no `'unsafe-inline'`, no wildcard sources, `object-src`/`base-uri`/`frame-ancestors 'none'`) can't be relaxed at all. Security headers may only be set in the `/*` block of `_headers`.
-- 🔒 **Security:** Client mode checks the folder holds only site files: no dotfiles, notes, backups or source maps, and no SVGs with scripts.
+- 🔒 **Security:** Client mode compares the client's headers and CSP with the template's own policy. Any other difference fails unless it's passed with `--allow`, and some protections in the site-wide policy (no `'unsafe-inline'` or `'unsafe-eval'`, no wildcard or scheme-wide sources, `object-src`/`base-uri`/`frame-ancestors 'none'`) can't be relaxed with it. Security headers may only be set in the `/*` block of `_headers`.
+- 🔒 **Security:** Client mode checks the folder holds only site files: no dotfiles, notes, backups or source maps, and no SVGs with `<script>` tags or `on…=` event attributes.
+- 🔒 **Security:** The policy checks read the site the way a browser does. A commented-out copy of the CSP `<meta>` tag is ignored, and `index.html` must have exactly one. A directive written twice fails, and the first copy (the one browsers use) is the one checked. CSP keywords are compared in any letter case.
+- 🔒 **Security:** `formEndpoint` is read by running `site-config.js`, as the browser does, and must appear in the file exactly once. The form tests swap the endpoint after the file has run, so a commented-out line can't hide the real one.
+- 🔒 **Security:** `--allow` only adds host sources such as `https://fonts.gstatic.com`. Keywords, schemes and `*` can't be passed.
+- 🔒 **Security:** `_redirects` rules may not point to another host or use status `200`. On Netlify a `200` rule to another host is a proxy, which would let that host's content through a CSP that only trusts the site itself.
 - 🔒 **Security:** Test pages can't contact any outside host. Every request to another host is answered by the test or blocked, so the tests never reach a client's real form endpoint.
 - The template tests build weakened copies of the site and require the client checks to catch each one.
 - Tests for the opening-hours calculations (`tests/hours.test.mjs`): past midnight, Saturday into Sunday, several ranges per day, no hours at all, time zones, and config validation.

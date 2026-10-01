@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import vm from "node:vm";
 
 // Expected SHA-384 of every file in js/vendor/. When upgrading Alpine, update
 // this table (see "Upgrading Alpine" in the docs).
@@ -61,32 +62,85 @@ export function siteWideHeaders(siteDir) {
   return Object.fromEntries(block ? block.headers : []);
 }
 
-export function parseCsp(csp) {
+// Keyword sources such as 'self' or 'unsafe-inline' are case-insensitive in
+// browsers, so they're compared in lower case. Nonces keep their case.
+const normalizeSource = (t) => (/^'[a-z-]+'$/i.test(t) && !/^'nonce-/i.test(t) ? t.toLowerCase() : t);
+
+// A CSP string as { directive: [sources] }. Browsers use the first copy of a
+// repeated directive and ignore the rest, so the first is kept here too, and
+// the repeats are listed in `repeated`.
+export function parseCspWithRepeats(csp) {
   const map = {};
+  const repeated = [];
   for (const d of (csp || "").split(";").map((x) => x.trim()).filter(Boolean)) {
     const [name, ...values] = d.split(/\s+/);
-    map[name.toLowerCase()] = values;
+    const key = name.toLowerCase();
+    if (key in map) { repeated.push(key); continue; }
+    map[key] = values.map(normalizeSource);
   }
-  return map;
+  return { map, repeated };
 }
 
+export const parseCsp = (csp) => parseCspWithRepeats(csp).map;
+
+// The Content-Security-Policy <meta> tags a browser would see: HTML comments
+// are removed first, and the attributes may be in any order or quoting.
+function cspMetaContents(html) {
+  const contents = [];
+  for (const [tag] of html.replace(/<!--[\s\S]*?(-->|$)/g, "").matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = {};
+    for (const m of tag.matchAll(/([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi)) attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4];
+    if ((attrs["http-equiv"] || "").toLowerCase() === "content-security-policy") contents.push(attrs.content ?? "");
+  }
+  return contents;
+}
+
+// Both CSP copies, plus anything that makes them ambiguous: not exactly one
+// meta tag, or a directive written more than once.
 export function readPolicies(siteDir) {
-  const html = fs.readFileSync(path.join(siteDir, "index.html"), "utf8");
-  const meta = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1];
-  return {
-    meta: meta === undefined ? null : parseCsp(meta),
-    header: parseCsp(siteWideHeaders(siteDir)["Content-Security-Policy"]),
-  };
+  const metas = cspMetaContents(fs.readFileSync(path.join(siteDir, "index.html"), "utf8"));
+  const meta = metas.length ? parseCspWithRepeats(metas[0]) : null;
+  const header = parseCspWithRepeats(siteWideHeaders(siteDir)["Content-Security-Policy"]);
+  const problems = [];
+  if (metas.length !== 1) problems.push(`index.html must have exactly one Content-Security-Policy meta tag outside comments (found ${metas.length})`);
+  for (const [label, p] of [["index.html", meta], ["_headers", header]]) {
+    for (const d of new Set(p?.repeated || [])) problems.push(`${label}: ${d} appears more than once (browsers use only the first)`);
+  }
+  return { meta: meta?.map ?? null, header: header.map, problems };
 }
 
-export function readEndpoint(siteDir) {
+// formEndpoint as the browser sees it: site-config.js is run in a sandbox and
+// window.SITE.formEndpoint is read, so commented-out lines don't count.
+// The file must also mention formEndpoint exactly once, so a commented-out
+// old endpoint or a later reassignment can't mislead a reader or the tests.
+export function readConfigEndpoint(siteDir) {
   const src = fs.readFileSync(path.join(siteDir, "js", "site-config.js"), "utf8");
-  return src.match(ENDPOINT_RE)?.[2] ?? null;
+  const problems = [];
+  const mentions = src.match(/\bformEndpoint\b/g)?.length ?? 0;
+  if (mentions !== 1) problems.push(`site-config.js mentions formEndpoint ${mentions} times; it must appear exactly once (remove commented-out or extra copies)`);
+  let endpoint = null;
+  try {
+    const sandbox = {};
+    sandbox.window = sandbox;
+    vm.runInNewContext(src, sandbox, { timeout: 1000, filename: "site-config.js" });
+    const value = sandbox.SITE?.formEndpoint;
+    if (typeof value === "string") endpoint = value;
+    else problems.push(`site-config.js: window.SITE.formEndpoint is ${value === undefined ? "missing" : "not a string"}`);
+  } catch (err) {
+    problems.push(`site-config.js couldn't be run: ${err.message}`);
+  }
+  return { endpoint, problems };
 }
+
+export const readEndpoint = (siteDir) => readConfigEndpoint(siteDir).endpoint;
 
 // "--allow" values. Two forms:
-//   "<csp-directive> <source> [<source> ...]"   e.g. "font-src https://fonts.gstatic.com"
-//   "header <path> <Header-Name>"               e.g. "header /images/* Cache-Control"
+//   "<csp-directive> <host-source> [<host-source> ...]"   e.g. "font-src https://fonts.gstatic.com"
+//   "header <path> <Header-Name>"                         e.g. "header /images/* Cache-Control"
+// A CSP exception can only add host sources (scheme://host[/path]). Keywords
+// such as 'unsafe-hashes' or 'strict-dynamic', bare schemes and "*" need a
+// change to the template itself.
+const HOST_SOURCE = /^[a-z][a-z0-9+.-]*:\/\/[^\s'"*;,]+$/i;
 export function parseAllows(list) {
   const csp = {};
   const headers = [];
@@ -94,10 +148,33 @@ export function parseAllows(list) {
   for (const raw of list) {
     const parts = raw.trim().split(/\s+/);
     if (parts[0] === "header" && parts.length === 3) headers.push({ path: parts[1], name: parts[2], raw });
-    else if (parts.length >= 2 && /^[a-z-]+$/.test(parts[0])) (csp[parts[0]] ||= []).push(...parts.slice(1));
+    else if (parts.length >= 2 && /^[a-z-]+$/.test(parts[0])) {
+      for (const t of parts.slice(1)) {
+        if (HOST_SOURCE.test(t)) (csp[parts[0]] ||= []).push(t);
+        else problems.push(`--allow "${raw}": "${t}" isn't a host source; --allow only adds sources like https://host.example (keywords, schemes and "*" need a template change)`);
+      }
+    }
     else problems.push(`can't read --allow "${raw}"`);
   }
   return { csp, headers, problems, raw: list };
+}
+
+// _redirects may only hold rules that stay on this site. A rule with an
+// absolute or protocol-relative target sends visitors to another host (and on
+// Netlify, a 200 rule to one is a proxy), and any 200 rule serves content
+// under a path the CSP trusts as 'self'.
+export function redirectsProblems(siteDir) {
+  const file = path.join(siteDir, "_redirects");
+  if (!fs.existsSync(file)) return ["_redirects is missing"];
+  const problems = [];
+  for (const [i, line] of fs.readFileSync(file, "utf8").split(/\r?\n/).entries()) {
+    const rule = line.trim();
+    if (!rule || rule.startsWith("#")) continue;
+    const tokens = rule.split(/\s+/).slice(1);
+    if (tokens.some((t) => /^([a-z][a-z0-9+.-]*:|\/\/)/i.test(t))) problems.push(`_redirects line ${i + 1} points to another host: ${rule}`);
+    if (tokens.some((t) => /^200!?$/.test(t))) problems.push(`_redirects line ${i + 1} is a 200 rewrite or proxy: ${rule}`);
+  }
+  return problems;
 }
 
 // ---------- checks ----------
@@ -188,9 +265,11 @@ export function policyChecks(siteDir, templateDir, allowList = [], { exactHsts =
 
   const site = readPolicies(siteDir);
   const base = readPolicies(templateDir);
-  const endpoint = readEndpoint(siteDir);
+  add("each CSP copy is written once, with no directive repeated", site.problems);
+  const config = readConfigEndpoint(siteDir);
+  add("site-config.js sets formEndpoint exactly once", config.problems);
   let endpointOrigin = null;
-  try { endpointOrigin = endpoint ? new URL(endpoint.trim()).origin : null; } catch {}
+  try { endpointOrigin = config.endpoint ? new URL(config.endpoint.trim()).origin : null; } catch {}
 
   add("CSP hard limits (both copies)", [
     ...hardFloorProblems("index.html", site.meta, { headerCopy: false }),
@@ -222,6 +301,8 @@ export function policyChecks(siteDir, templateDir, allowList = [], { exactHsts =
   }
   for (const a of allows.headers) if (!used.has(a.raw)) allowProblems.push(`--allow "${a.raw}" isn't needed; remove it`);
   add("every --allow exception is used", allowProblems);
+
+  add("_redirects only redirects within the site (no other hosts, no 200 rewrites)", redirectsProblems(siteDir));
 
   return { groups, usedAllows: [...used] };
 }

@@ -21,7 +21,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import {
-  ENDPOINT_RE, VENDOR_SHA384, parseCsp, readPolicies, siteWideHeaders,
+  ENDPOINT_RE, VENDOR_SHA384, parseCsp, readPolicies, readEndpoint, siteWideHeaders,
   policyChecks, folderProblems, vendorProblems,
 } from "./site-policy.mjs";
 
@@ -179,13 +179,11 @@ async function newPage({ bypassCSP = false, configOverride = null, configPatch =
           src = configPatch(src);
           if (src === null) return c.send("Fetch.fulfillRequest", { requestId, responseCode: 404, body: "" });
         }
-        // If the endpoint can't be swapped out, fail the page load rather than
-        // risk sending a test message to a client's real endpoint.
-        if (configOverride !== null && !ENDPOINT_RE.test(src)) {
-          console.log("      HARNESS: could not find formEndpoint in site-config.js; blocking page load");
-          return c.send("Fetch.failRequest", { requestId, errorReason: "Aborted" });
-        }
-        if (configOverride !== null) src = src.replace(ENDPOINT_RE, `formEndpoint: ${JSON.stringify(configOverride)}`);
+        // Swap the endpoint after the file has run, the same way whatever the
+        // file looks like (comments included). Strict mode makes a missing or
+        // read-only window.SITE throw, so the page fails visibly instead of
+        // keeping the client's real endpoint.
+        if (configOverride !== null) src += `\n;(function () { "use strict"; window.SITE.formEndpoint = ${JSON.stringify(configOverride)}; })();\n`;
         await c.send("Fetch.fulfillRequest", { requestId, responseCode: 200,
           responseHeaders: [{ name: "Content-Type", value: "text/javascript" }], body: Buffer.from(src).toString("base64") });
       } else if (responseStatusCode !== undefined) {
@@ -285,8 +283,7 @@ async function componentSuite(label, url) {
 
 // The client's own endpoint: set, a public https URL, and allowed by both CSPs.
 function clientConfigChecks() {
-  const src = fs.readFileSync(path.join(SITE, "js", "site-config.js"), "utf8");
-  const value = src.match(ENDPOINT_RE)?.[2] ?? "";
+  const value = readEndpoint(SITE) ?? "";
   let url = null;
   try { url = new URL(value.trim()); } catch {}
   check("[client config] formEndpoint is set", value.trim() !== "", "formEndpoint is empty: the form would show an error on the live site");
@@ -658,11 +655,25 @@ function weakenedCopySuite() {
       ["SVG with a script", (d) => fs.writeFileSync(path.join(d, "images", "logo.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'), "logo.svg: SVG contains a script"],
       ["SVG with an event attribute", (d) => fs.writeFileSync(path.join(d, "images", "logo.svg"), '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>'), "logo.svg: SVG contains a script"],
       ["vendor file changed by one byte", (d) => fs.appendFileSync(path.join(d, "js", "vendor", Object.keys(VENDOR_SHA384)[0]), " "), "SHA-384 is"],
+      // The policy must be read the way the browser reads it.
+      ["commented-out CSP meta tag above a widened real one", (d) => edit(d, "index.html", (s) => s.replace(/(\s*)(<meta http-equiv="Content-Security-Policy"[^>]*>)/,
+        (_, ws, tag) => `${ws}<!-- ${tag} -->${ws}${tag.replace("script-src 'self'", "script-src 'self' https://evil.example")}`)), 'index.html: script-src adds "https://evil.example"'],
+      ["second CSP meta tag", (d) => edit(d, "index.html", (s) => s.replace(/(<meta http-equiv="Content-Security-Policy"[^>]*>)/, "$1\n  $1")), "exactly one Content-Security-Policy meta tag outside comments (found 2)"],
+      ["repeated directive, looser copy first (both copies)", (d) => bothCsps(d, (c) => "script-src 'self' https://evil.example; " + c), "script-src appears more than once"],
+      ["repeated frame-ancestors, * first (_headers)", (d) => edit(d, "_headers", (s) => s.replace("Content-Security-Policy: ", "Content-Security-Policy: frame-ancestors *; ")), `frame-ancestors must be 'none' (is "*")`],
+      ["commented-out old formEndpoint in site-config.js", (d) => edit(d, "js/site-config.js", (s) => s.replace("  formEndpoint:", '  // formEndpoint: "https://old-provider.example/f/1",\n  formEndpoint:')), "mentions formEndpoint 2 times"],
+      ["formEndpoint changed later in site-config.js", (d) => fs.appendFileSync(path.join(d, "js", "site-config.js"), '\nwindow.SITE.formEndpoint = "https://other.example/f/2";\n'), "mentions formEndpoint 2 times"],
+      ["'UNSAFE-INLINE' in upper case, with --allow (both copies)", (d) => bothCsps(d, (c) => c.replace("style-src 'self'", "style-src 'self' 'UNSAFE-INLINE'")), "style-src contains 'unsafe-inline'", ["style-src 'UNSAFE-INLINE'"]],
+      ["'Unsafe-Eval' in mixed case, with --allow (both copies)", (d) => bothCsps(d, (c) => c.replace("script-src 'self'", "script-src 'self' 'Unsafe-Eval'")), "script-src contains 'unsafe-eval'", ["script-src 'Unsafe-Eval'"]],
+      ["a keyword passed with --allow ('strict-dynamic')", (d) => bothCsps(d, (c) => c.replace("script-src 'self'", "script-src 'self' 'strict-dynamic'")), `"'strict-dynamic'" isn't a host source`, ["script-src 'strict-dynamic'"]],
+      ["_redirects proxies a path to another host", (d) => fs.appendFileSync(path.join(d, "_redirects"), "/api/*  https://collector.example/:splat  200!\n"), "points to another host: /api/*"],
+      ["_redirects sends a path to another host (301)", (d) => fs.appendFileSync(path.join(d, "_redirects"), "/order  //shop.example/  301\n"), "points to another host: /order"],
+      ["_redirects rewrites a script path (200)", (d) => fs.appendFileSync(path.join(d, "_redirects"), "/js/extra.js  /images/photo-1.svg  200\n"), "is a 200 rewrite or proxy: /js/extra.js"],
     ];
-    for (const [i, [label, weaken, expected]] of cases.entries()) {
+    for (const [i, [label, weaken, expected, caseAllows = []]] of cases.entries()) {
       const dir = makeClient(`case-${i}`);
       weaken(dir);
-      const problems = problemsFor(dir);
+      const problems = problemsFor(dir, caseAllows);
       check(`[weakened copies] fails: ${label}`, problems.some((p) => p.includes(expected)),
         problems.length ? `expected a problem containing "${expected}"; got: ${problems.join(" | ")}` : "no problem reported");
     }
@@ -682,6 +693,12 @@ function weakenedCopySuite() {
     edit(block, "_headers", (s) => s + "\n/images/*\n  Cross-Origin-Resource-Policy: cross-origin\n");
     check("[weakened copies] a per-path security header passes only with --allow",
       problemsFor(block).length > 0 && problemsFor(block, ["header /images/* Cross-Origin-Resource-Policy"]).length === 0, "not handled as expected");
+
+    // The endpoint is the one the browser would use, not the first line that mentions it.
+    const commented = makeClient("commented-endpoint");
+    edit(commented, "js/site-config.js", (s) => s.replace("  formEndpoint:", '  // formEndpoint: "https://old-provider.example/f/1",\n  formEndpoint:'));
+    check("[weakened copies] formEndpoint is read as the browser sees it, not from a comment",
+      readEndpoint(commented) === "https://forms.example/f/abc", `read "${readEndpoint(commented)}"`);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

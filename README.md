@@ -117,7 +117,7 @@ site/                    THE WEBSITE: the only folder that is deployed or copied
 docs/                    Developer documentation for the Alpine components (not deployed)
 tests/browser-test.mjs   Automated browser tests (not deployed)
 tests/hours.test.mjs     Tests for the opening-hours calculations (not deployed)
-tests/site-policy.mjs    File checks for a site folder: headers, CSP, contents, vendor files
+tests/site-policy.mjs    File checks for a site folder: headers, CSP, contents, vendor files (not deployed)
 CHANGELOG.md             Template releases; security-relevant changes are marked (not deployed)
 screenshots/             Images used in this README (not deployed)
 README.md                This file (not deployed)
@@ -145,11 +145,14 @@ node tests/browser-test.mjs --client path/to/client-site
 This mode skips the checks that depend on the sample menu, photos and FAQ, so it works with any client's content. It checks that:
 
 - **The security policy matches the template's.** The client's `_headers` and CSP are compared with the template's own `site/` folder. The only difference accepted without comment is the form endpoint's origin in `connect-src`. Every security header must be present with the template's value; HSTS may add `includeSubDomains`. Security headers may only be set in the `/*` block.
-- **Some protections can never be relaxed:** no `'unsafe-inline'`, no `*` or scheme-wide sources such as `https:`, and `object-src`, `base-uri` and `frame-ancestors` stay `'none'`.
-- **The folder holds only the site:** `index.html`, `404.html`, `_headers`, `_redirects`, `css/`, `js/` and `images/`. No dotfiles (`.git/`, `.env`), notes, backups or source maps; images are image files; SVGs contain no scripts.
+- **Some protections can never be relaxed in the site-wide policy:** no `'unsafe-inline'` or `'unsafe-eval'` (in any letter case), no `*` or scheme-wide sources such as `https:`, and `object-src`, `base-uri` and `frame-ancestors` stay `'none'`.
+- **The policy is read the way a browser reads it:** `index.html` has exactly one CSP `<meta>` tag outside HTML comments, and no directive appears twice in either copy (browsers use only the first).
+- **`formEndpoint` appears exactly once in `site-config.js`.** The tests read it by running the file, as the browser does, so a commented-out old endpoint or a second assignment fails the run.
+- **`_redirects` stays on the site:** no rule may point to another host, and no rule may use status `200` (a rewrite, or on Netlify a proxy, which would serve another host's content as the site's own).
+- **The folder holds only the site:** `index.html`, `404.html`, `_headers`, `_redirects`, `css/`, `js/` and `images/`. No dotfiles (`.git/`, `.env`), notes, backups or source maps; images are image files; SVGs contain no `<script>` tags or `on…=` event attributes.
 - **The Alpine files are the verified ones**, byte for byte.
 - **The client's form setup is right:** `formEndpoint` is a public `https://` URL with no credentials, and its origin is in `connect-src` in both CSP copies.
-- **The page loads cleanly** with the headers applied: no CSP violations, no console errors, and no requests to other hosts.
+- **The page loads cleanly** with the headers applied: no CSP violations, no console errors or warnings, and no requests to other hosts except those passed with `--allow`.
 
 **Exceptions.** If a client genuinely needs something the template doesn't allow, such as a web-font host, pass it explicitly and record it, with the reason, in the client register:
 
@@ -158,6 +161,6 @@ node tests/browser-test.mjs --client path/to/client-site --allow "font-src https
 node tests/browser-test.mjs --client path/to/client-site --allow "header /images/* Cross-Origin-Resource-Policy"
 ```
 
-`--allow` can be repeated. A difference that isn't passed this way fails the run, and so does an `--allow` that isn't needed.
+`--allow` can be repeated. A difference that isn't passed this way fails the run, and so does an `--allow` that isn't needed. A CSP exception can only add host sources such as `https://fonts.gstatic.com`. Keywords (`'unsafe-hashes'`, `'strict-dynamic'` and so on), schemes and `*` are rejected: they need a change to the template itself.
 
 **The tests never contact anything outside your machine.** The form tests swap in a fake endpoint, and every request from a test page to another host is either answered by the test itself or blocked. Running the tests never sends anything to the client's real form provider.
