@@ -1,9 +1,10 @@
 // Tests for the opening-hours helpers in site/js/components.js.
 // Run from the project root:  node --test tests/hours.test.mjs
 //
-// The helpers are plain functions, so components.js is loaded into a sandbox
-// with a stub `document`; no browser needed. Times are "minutes since Sunday
-// 00:00", so a whole week is one number line from 0 to 10080.
+// The helpers are plain functions, so components.js is run in a separate Node
+// context (not a security sandbox) with a stub `document`; no browser needed.
+// Times are "minutes since Sunday 00:00", so a whole week is one number line
+// from 0 to 10080.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

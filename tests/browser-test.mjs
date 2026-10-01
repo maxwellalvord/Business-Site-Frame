@@ -21,7 +21,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import {
-  ENDPOINT_RE, VENDOR_SHA384, parseCsp, readPolicies, readEndpoint, siteWideHeaders,
+  ENDPOINT_RE, VENDOR_SHA384, parseCsp, readPolicies, siteWideHeaders,
   policyChecks, folderProblems, vendorProblems,
 } from "./site-policy.mjs";
 
@@ -50,7 +50,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Behaves like the intended production host: serves only files inside site/,
 // never dotfiles, and answers bad requests with 400 instead of crashing.
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
-function resolveSitePath(urlPath) {
+function resolveSitePath(urlPath, root = SITE) {
   let p;
   try {
     p = decodeURIComponent(new URL(urlPath, "http://x").pathname);
@@ -58,15 +58,18 @@ function resolveSitePath(urlPath) {
     return { status: 400 };
   }
   if (p === "/") p = "/index.html";
-  const f = path.join(SITE, p);
-  const rel = path.relative(SITE, f);
+  const f = path.join(root, p);
+  const rel = path.relative(root, f);
   const outside = rel.startsWith("..") || path.isAbsolute(rel);
   const dotfile = rel.split(path.sep).some((seg) => seg.startsWith("."));
   if (outside || dotfile || !fs.existsSync(f) || !fs.statSync(f).isFile()) return { status: 404 };
   return { status: 200, file: f };
 }
-function startServer(port, applyHeaders) {
-  const hdrs = applyHeaders ? siteWideHeaders(SITE) : {};
+// getRoot: the folder to serve, read on every request (the weakened-copy
+// server switches between copies). That server also turns caching off, so a
+// page never comes from a previous copy.
+function startServer(port, applyHeaders, getRoot = null) {
+  const hdrs = applyHeaders ? siteWideHeaders(SITE) : getRoot ? { "Cache-Control": "no-store" } : {};
   const srv = http.createServer((req, res) => {
     // A test-only script, loaded by the page like its own scripts so it runs
     // under the page's real Content-Security-Policy. It records whether eval
@@ -75,7 +78,7 @@ function startServer(port, applyHeaders) {
       res.writeHead(200, { "Content-Type": "text/javascript", ...hdrs });
       return res.end('try { new Function("return 1")(); window.__evalProbe = "allowed"; } catch (e) { window.__evalProbe = "blocked"; }');
     }
-    const { status, file } = resolveSitePath(req.url);
+    const { status, file } = resolveSitePath(req.url, getRoot ? getRoot() : SITE);
     if (status !== 200) { res.writeHead(status); return res.end(); }
     res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream", ...hdrs });
     fs.createReadStream(file).pipe(res);
@@ -140,11 +143,36 @@ function isLocalTestUrl(url) {
   } catch { return false; }
 }
 
+// Runs at the start of every page, in an isolated world: the page's own
+// scripts share the DOM but can't reach anything defined here. readCspMetas()
+// returns the CSP meta tags as the browser parsed them, and lists any script
+// that changed or removed a <meta> tag afterwards (a policy the browser has
+// applied stays applied, whatever the tag says later).
+const READ_WORLD = "site-policy-read";
+const META_WATCH = `(() => {
+  const changes = new Set();
+  const isMeta = (n) => n.nodeType === 1 && n.localName === "meta";
+  const note = (records) => { for (const r of records) {
+    if (r.type === "attributes" && isMeta(r.target)) changes.add("a script changed the " + r.attributeName + " attribute of a <meta> tag after the page loaded it");
+    if (r.type === "childList") for (const n of r.removedNodes) {
+      if (isMeta(n) || (n.nodeType === 1 && n.querySelector("meta"))) changes.add("a script removed a <meta> tag after the page loaded it");
+    }
+  } };
+  const watch = new MutationObserver(note);
+  watch.observe(document, { subtree: true, childList: true, attributes: true });
+  globalThis.readCspMetas = () => {
+    note(watch.takeRecords());
+    const tags = [...document.querySelectorAll("meta[http-equiv]")].filter((m) => m.getAttribute("http-equiv").trim().toLowerCase() === "content-security-policy");
+    return { url: location.origin + location.pathname, changes: [...changes],
+      metas: tags.map((m) => ({ content: m.getAttribute("content") ?? "", inHead: !!document.head && document.head.contains(m) })) };
+  };
+})();`;
+
 // configPatch: optional function that rewrites site-config.js before the page
 // sees it; returning null makes the file fail to load (404).
 async function newPage({ bypassCSP = false, configOverride = null, configPatch = null, onRequest = null } = {}) {
   const res = await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: "PUT" });
-  const { webSocketDebuggerUrl } = await res.json();
+  const { id: targetId, webSocketDebuggerUrl } = await res.json();
   const c = await connect(webSocketDebuggerUrl);
   const logs = [];
   c.on((m) => {
@@ -156,6 +184,13 @@ async function newPage({ bypassCSP = false, configOverride = null, configPatch =
   await c.send("Runtime.enable");
   await c.send("Log.enable");
   await c.send("Page.enable");
+  const { frameTree } = await c.send("Page.getFrameTree");
+  let readWorld = null;
+  c.on((m) => {
+    const ctx = m.method === "Runtime.executionContextCreated" && m.params.context;
+    if (ctx && ctx.name === READ_WORLD && ctx.auxData?.frameId === frameTree.frame.id) readWorld = ctx.id;
+  });
+  await c.send("Page.addScriptToEvaluateOnNewDocument", { source: META_WATCH, worldName: READ_WORLD });
   if (bypassCSP) await c.send("Page.setBypassCSP", { enabled: true });
   // Record CSP violations from inside the page (CDP-injected scripts aren't subject to CSP).
   await c.send("Page.addScriptToEvaluateOnNewDocument", { source:
@@ -198,10 +233,15 @@ async function newPage({ bypassCSP = false, configOverride = null, configPatch =
       }
     });
   }
-  const evalJS = async (expr) => {
-    const r = await c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
+  const evalIn = async (expr, contextId) => {
+    const r = await c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true, ...(contextId ? { contextId } : {}) });
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
     return r.result.value;
+  };
+  const evalJS = (expr) => evalIn(expr);
+  const evalRead = (expr) => {
+    if (!readWorld) throw new Error("the read world wasn't created in the page");
+    return evalIn(expr, readWorld);
   };
   const key = async (k, code, vk, { text, modifiers = 0 } = {}) => {
     await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: vk, text, modifiers });
@@ -211,7 +251,49 @@ async function newPage({ bypassCSP = false, configOverride = null, configPatch =
     await c.send("Page.navigate", { url });
     await sleep(1500);
   };
-  return { c, logs, blocked, evalJS, key, goto };
+  const close = async () => { c.close(); await fetch(`http://127.0.0.1:${PORT}/json/close/${targetId}`).catch(() => {}); };
+  return { c, logs, blocked, evalJS, evalRead, key, goto, close };
+}
+
+// Load one page and read what the browser applied: its CSP meta tags and, with
+// `endpoint`, window.SITE.formEndpoint. This is the only place a site's
+// scripts run, inside Chrome's sandbox. Outside requests are blocked as usual.
+async function readPage(url, { endpoint = false } = {}) {
+  const page = new URL(url).pathname.replace(/^\/$/, "/index.html").slice(1);
+  const out = { page: { metas: [], problems: [] }, endpoint: null, endpointProblems: [] };
+  const p = await newPage();
+  const within = (promise) => Promise.race([promise, sleep(10000).then(() => { throw new Error("no answer within 10 s"); })]);
+  try {
+    const loaded = new Promise((r) => p.c.on((m) => { if (m.method === "Page.loadEventFired") r(); }));
+    await p.c.send("Page.navigate", { url });
+    await within(loaded);
+    const read = await within(p.evalRead("readCspMetas()"));
+    const want = new URL(url);
+    if (read.url !== want.origin + want.pathname) out.page.problems.push(`${page}: the page moved to ${read.url} while it was read`);
+    out.page.problems.push(...read.changes.map((x) => `${page}: ${x}`));
+    out.page.metas = read.metas;
+    if (endpoint) {
+      const r = await within(p.evalJS(`(() => { const v = window.SITE?.formEndpoint; return typeof v === "string" ? { value: v } : { type: v === undefined ? "missing" : "not a string" }; })()`));
+      if ("value" in r) out.endpoint = r.value;
+      else {
+        const errors = p.logs.filter((l) => l.type === "exception").map((l) => l.text);
+        out.endpointProblems.push(`window.SITE.formEndpoint is ${r.type} in the loaded page${errors.length ? ` (site-config.js errors: ${errors.join(" | ")})` : ""}`);
+      }
+    }
+  } catch (err) {
+    out.page.problems.push(`${page}: couldn't be read in the browser: ${err.message}`);
+    if (endpoint) out.endpointProblems.push(`formEndpoint couldn't be read from the loaded page: ${err.message}`);
+  } finally {
+    await p.close();
+  }
+  return out;
+}
+
+// What policyChecks() needs from the browser, for the site served at `base`.
+async function readSite(base) {
+  const index = await readPage(`${base}/`, { endpoint: true });
+  const notFound = await readPage(`${base}/404.html`);
+  return { endpoint: index.endpoint, endpointProblems: index.endpointProblems, pages: { "index.html": index.page, "404.html": notFound.page } };
 }
 
 // Fill the form through real input events so x-model picks them up.
@@ -282,8 +364,9 @@ async function componentSuite(label, url) {
 }
 
 // The client's own endpoint: set, a public https URL, and allowed by both CSPs.
-function clientConfigChecks() {
-  const value = readEndpoint(SITE) ?? "";
+// siteReads: what the browser read from the client's page (readSite()).
+function clientConfigChecks(siteReads) {
+  const value = siteReads.endpoint ?? "";
   let url = null;
   try { url = new URL(value.trim()); } catch {}
   check("[client config] formEndpoint is set", value.trim() !== "", "formEndpoint is empty: the form would show an error on the live site");
@@ -601,7 +684,11 @@ async function brokenConfigSuite() {
 // starts from a correctly configured client copy (a form endpoint, and its
 // origin added to connect-src in both CSP copies), which must pass. Then one
 // change is made per case, and the checks must report at least one problem.
-function weakenedCopySuite() {
+// Each copy is served on its own port and read in the browser, like a client's.
+let copyRoot = null;
+const COPY_PORT = 8767;
+const readCopy = (dir) => { copyRoot = dir; return readSite(`http://localhost:${COPY_PORT}`); };
+async function weakenedCopySuite() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "site-copy-"));
   const edit = (dir, rel, fn) => { const f = path.join(dir, rel); fs.writeFileSync(f, fn(fs.readFileSync(f, "utf8"))); };
   const bothCsps = (dir, fn) => {
@@ -615,15 +702,22 @@ function weakenedCopySuite() {
     bothCsps(dir, (csp) => csp.replace("connect-src 'self'", "connect-src 'self' https://forms.example"));
     return dir;
   };
-  const problemsFor = (dir, allows = []) => [
-    ...policyChecks(dir, SITE, allows).groups.flatMap((g) => g.problems),
+  const problemsFor = async (dir, allows = []) => [
+    ...policyChecks(dir, SITE, allows, { pageReads: await readCopy(dir) }).groups.flatMap((g) => g.problems),
     ...folderProblems(dir),
     ...vendorProblems(dir),
   ];
+  // CSP meta tags that read one way as text and another way in the browser.
+  // The "weak" policy adds https://evil.example to script-src.
+  const META_TAG = /<meta http-equiv="Content-Security-Policy"[^>]*>/;
+  const widen = (csp) => csp.replace("script-src 'self'", "script-src 'self' https://evil.example");
+  const metaTrick = (fn) => (d) => edit(d, "index.html", (s) => s.replace(META_TAG, (tag) => fn(tag, widen(tag))));
+  const twoContents = (tag) => tag.replace(/content="([^"]*)"/, (_, csp) => `content="${widen(csp)}" content="${csp}"`);
+  const strictContent = (d) => fs.readFileSync(path.join(d, "index.html"), "utf8").match(META_TAG)[0].match(/content="([^"]*)"/)[1];
 
   try {
     const clean = makeClient("clean");
-    const cleanProblems = problemsFor(clean);
+    const cleanProblems = await problemsFor(clean);
     check("[weakened copies] a correctly configured client copy passes", cleanProblems.length === 0, cleanProblems.join("\n        "));
 
     // Remove one header line from the "/*" block (spaces/tabs only, so the
@@ -669,11 +763,26 @@ function weakenedCopySuite() {
       ["_redirects proxies a path to another host", (d) => fs.appendFileSync(path.join(d, "_redirects"), "/api/*  https://collector.example/:splat  200!\n"), "points to another host: /api/*"],
       ["_redirects sends a path to another host (301)", (d) => fs.appendFileSync(path.join(d, "_redirects"), "/order  //shop.example/  301\n"), "points to another host: /order"],
       ["_redirects rewrites a script path (200)", (d) => fs.appendFileSync(path.join(d, "_redirects"), "/js/extra.js  /images/photo-1.svg  200\n"), "is a 200 rewrite or proxy: /js/extra.js"],
+      // The meta tag the browser applies must be the one the file reading found.
+      ["CSP meta tag with two content attributes, the weaker first (browsers use the first)", metaTrick(twoContents), "index.html: the browser reads a different Content-Security-Policy meta tag"],
+      ["weak CSP meta tag after <!--->, strict copy inside <template>", metaTrick((tag, weak) => `<!---> ${weak} <!-- -->\n  <template>${tag}</template>`), "index.html: the browser reads a different Content-Security-Policy meta tag"],
+      ["weak CSP meta tag after a comment closed with --!>, strict copy inside <noscript>", metaTrick((tag, weak) => `<!-- old --!> ${weak} <!-- -->\n  <noscript>${tag}</noscript>`), "index.html: the browser reads a different Content-Security-Policy meta tag"],
+      ["site-config.js rewrites the applied meta tag to match the file", (d) => {
+        const strict = strictContent(d);
+        metaTrick(twoContents)(d);
+        fs.appendFileSync(path.join(d, "js", "site-config.js"), `\ndocument.querySelector('meta[http-equiv="Content-Security-Policy"]').setAttribute("content", ${JSON.stringify(strict)});\n`);
+      }, "a script changed the content attribute of a <meta> tag"],
+      ["CSP meta tag moved into <body>, where browsers ignore it", (d) => edit(d, "index.html", (s) => { const tag = s.match(META_TAG)[0]; return s.replace(tag, "").replace(/<body[^>]*>/, (b) => `${b}\n  ${tag}`); }), "index.html: a Content-Security-Policy meta tag is outside <head>"],
+      // 404.html has its own, stricter policy.
+      ["404.html allows inline scripts", (d) => edit(d, "404.html", (s) => s.replace("script-src 'none'", "script-src 'unsafe-inline'")), "404.html: script-src contains 'unsafe-inline'"],
+      ["404.html may connect to another host", (d) => edit(d, "404.html", (s) => s.replace("connect-src 'none'", "connect-src https://evil.example")), '404.html: connect-src adds "https://evil.example"'],
+      ["404.html without its CSP meta tag", (d) => edit(d, "404.html", (s) => s.replace(META_TAG, "")), "404.html must have exactly one Content-Security-Policy meta tag outside comments (found 0)"],
+      ["404.html: weak CSP meta tag after <!--->, strict copy inside <template>", (d) => edit(d, "404.html", (s) => s.replace(META_TAG, (tag) => `<!---> ${tag.replace("script-src 'none'", "script-src 'unsafe-inline'")} <!-- -->\n  <template>${tag}</template>`)), "404.html: the browser reads a different Content-Security-Policy meta tag"],
     ];
     for (const [i, [label, weaken, expected, caseAllows = []]] of cases.entries()) {
       const dir = makeClient(`case-${i}`);
       weaken(dir);
-      const problems = problemsFor(dir, caseAllows);
+      const problems = await problemsFor(dir, caseAllows);
       check(`[weakened copies] fails: ${label}`, problems.some((p) => p.includes(expected)),
         problems.length ? `expected a problem containing "${expected}"; got: ${problems.join(" | ")}` : "no problem reported");
     }
@@ -682,23 +791,35 @@ function weakenedCopySuite() {
     // an unused exception fails, and the hard limits can't be allowed away.
     const fonts = makeClient("fonts");
     bothCsps(fonts, (c) => c.replace("style-src 'self'", "style-src 'self' https://fonts.example"));
-    check("[weakened copies] an extra source without --allow fails", problemsFor(fonts).length > 0, "no problem reported");
-    const allowed = problemsFor(fonts, ["style-src https://fonts.example"]);
+    check("[weakened copies] an extra source without --allow fails", (await problemsFor(fonts)).length > 0, "no problem reported");
+    const allowed = await problemsFor(fonts, ["style-src https://fonts.example"]);
     check("[weakened copies] the same source with --allow passes", allowed.length === 0, allowed.join("\n        "));
-    check("[weakened copies] an unused --allow fails", problemsFor(clean, ["style-src https://fonts.example"]).length > 0, "no problem reported");
+    check("[weakened copies] an unused --allow fails", (await problemsFor(clean, ["style-src https://fonts.example"])).length > 0, "no problem reported");
     const inline = makeClient("inline");
     bothCsps(inline, (c) => c.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"));
-    check("[weakened copies] 'unsafe-inline' fails even with --allow", problemsFor(inline, ["style-src 'unsafe-inline'"]).length > 0, "no problem reported");
+    check("[weakened copies] 'unsafe-inline' fails even with --allow", (await problemsFor(inline, ["style-src 'unsafe-inline'"])).length > 0, "no problem reported");
     const block = makeClient("block");
     edit(block, "_headers", (s) => s + "\n/images/*\n  Cross-Origin-Resource-Policy: cross-origin\n");
     check("[weakened copies] a per-path security header passes only with --allow",
-      problemsFor(block).length > 0 && problemsFor(block, ["header /images/* Cross-Origin-Resource-Policy"]).length === 0, "not handled as expected");
+      (await problemsFor(block)).length > 0 && (await problemsFor(block, ["header /images/* Cross-Origin-Resource-Policy"])).length === 0, "not handled as expected");
 
-    // The endpoint is the one the browser would use, not the first line that mentions it.
+    // The endpoint is the one the browser uses, not the first line that mentions it.
     const commented = makeClient("commented-endpoint");
     edit(commented, "js/site-config.js", (s) => s.replace("  formEndpoint:", '  // formEndpoint: "https://old-provider.example/f/1",\n  formEndpoint:'));
-    check("[weakened copies] formEndpoint is read as the browser sees it, not from a comment",
-      readEndpoint(commented) === "https://forms.example/f/abc", `read "${readEndpoint(commented)}"`);
+    const commentedRead = (await readCopy(commented)).endpoint;
+    check("[weakened copies] formEndpoint is read from the loaded page, not from a comment",
+      commentedRead === "https://forms.example/f/abc", `read "${commentedRead}"`);
+
+    // site-config.js only ever runs in the browser. Code that would write a
+    // file if it ran in Node (it can't break out of Chrome) must write nothing,
+    // and the copy must still pass.
+    const marker = path.join(tmp, "written-by-site-config.txt");
+    const probe = makeClient("node-probe");
+    fs.appendFileSync(path.join(probe, "js", "site-config.js"),
+      `\ntry { this.constructor.constructor("return process")().getBuiltinModule("fs").writeFileSync(${JSON.stringify(marker)}, "x"); } catch (e) {}\n`);
+    const probeProblems = await problemsFor(probe);
+    check("[weakened copies] site-config.js never runs in Node (code that would write a file there writes nothing)",
+      !fs.existsSync(marker) && probeProblems.length === 0, fs.existsSync(marker) ? `${marker} was written` : probeProblems.join(" | "));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -711,6 +832,8 @@ try {
 
   const plain = await startServer(8765, false);
   const withHeaders = await startServer(8766, true);
+  const copies = CLIENT_MODE ? null : await startServer(COPY_PORT, false, () => copyRoot);
+  const siteReads = await readSite("http://localhost:8765");
 
   if (!CLIENT_MODE) {
     // Template-only: these depend on the sample content (menu, photos, FAQ).
@@ -722,14 +845,14 @@ try {
     await keyboardSuite();
   } else {
     // Client-only: the client's own endpoint and page.
-    clientConfigChecks();
+    clientConfigChecks(siteReads);
     await clientSmoke();
   }
 
   // Security and deployment checks: must pass for the template and every client copy.
   const vendor = vendorProblems(SITE);
   check("[vendor] js/vendor/ holds exactly the verified Alpine files", vendor.length === 0, vendor.join("\n        "));
-  const policy = policyChecks(SITE, TEMPLATE_SITE, ALLOWS, { exactHsts: !CLIENT_MODE });
+  const policy = policyChecks(SITE, TEMPLATE_SITE, ALLOWS, { exactHsts: !CLIENT_MODE, pageReads: siteReads });
   checkGroups("[policy]", policy.groups);
   const folder = folderProblems(SITE);
   check("[folder] only site files, nothing that shouldn't be public", folder.length === 0, folder.join("\n        "));
@@ -738,7 +861,7 @@ try {
   }
   await evalBlockedSuite();
   await formSecuritySuite();
-  if (!CLIENT_MODE) weakenedCopySuite();
+  if (!CLIENT_MODE) await weakenedCopySuite();
   {
     const redirects = fs.readFileSync(path.join(SITE, "_redirects"), "utf8");
     check("[deploy layout] _redirects guards project files outside site/",
@@ -764,7 +887,7 @@ try {
     }
   }
 
-  plain.close(); withHeaders.close();
+  plain.close(); withHeaders.close(); copies?.close();
 } catch (err) {
   console.error("HARNESS ERROR", err);
   results.push({ ok: false });

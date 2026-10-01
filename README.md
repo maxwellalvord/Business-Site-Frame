@@ -97,7 +97,7 @@ Complete this for every new client site:
 - [ ] Client photos are JPG, PNG or WebP (no unsanitized SVGs), and every image has `alt` text
 - [ ] Placeholder contact details (`hello@example.com`, phone, address) are replaced
 - [ ] Keyboard-only walkthrough: skip link, nav, filters, lightbox, FAQ and form
-- [ ] **The security and deployment tests pass against this client's `site/` copy:** `node tests/browser-test.mjs --client <path-to-client-site>` (see [Tests](#tests)). Any `--allow` exception is recorded, with the reason, in the client register.
+- [ ] **The security and deployment tests pass against this client's `site/` copy:** `node tests/browser-test.mjs --client <path-to-client-site>` (see [Tests](#tests)). Any `--allow` exception is recorded, with the reason, in the client register. A `script-src` exception also needs a security review for that client before it's added.
 - [ ] **The Alpine version was checked** against the latest release and security advisories
 - [ ] **The site is added to the client register** with the template release it was copied from, its live URL, its form provider and any `--allow` exceptions. Keep the register private, outside `site/`.
 
@@ -144,10 +144,11 @@ node tests/browser-test.mjs --client path/to/client-site
 
 This mode skips the checks that depend on the sample menu, photos and FAQ, so it works with any client's content. It checks that:
 
-- **The security policy matches the template's.** The client's `_headers` and CSP are compared with the template's own `site/` folder. The only difference accepted without comment is the form endpoint's origin in `connect-src`. Every security header must be present with the template's value; HSTS may add `includeSubDomains`. Security headers may only be set in the `/*` block.
+- **The security policy matches the template's.** The client's `_headers` and CSP are compared with the template's own `site/` folder. The only difference accepted without comment is the form endpoint's origin in `connect-src`. Every security header must be present with the template's value; HSTS may add `includeSubDomains`. Security headers may only be set in the `/*` block (unless passed with `--allow`, below).
 - **Some protections can never be relaxed in the site-wide policy:** no `'unsafe-inline'` or `'unsafe-eval'` (in any letter case), no `*` or scheme-wide sources such as `https:`, and `object-src`, `base-uri` and `frame-ancestors` stay `'none'`.
-- **The policy is read the way a browser reads it:** `index.html` has exactly one CSP `<meta>` tag outside HTML comments, and no directive appears twice in either copy (browsers use only the first).
-- **`formEndpoint` appears exactly once in `site-config.js`.** The tests read it by running the file, as the browser does, so a commented-out old endpoint or a second assignment fails the run.
+- **The CSP `<meta>` tags are the ones the browser applies.** `index.html` and `404.html` each have exactly one, outside HTML comments, and no directive appears twice in any copy (browsers use only the first). The tags are also read from each page as Chrome loads it, and the run fails if that reading differs from the file's, if a tag is outside `<head>`, or if a script on the page changes or removes a `<meta>` tag.
+- **`404.html` keeps its own, stricter policy:** the same hard limits, compared with the template's `404.html`.
+- **`formEndpoint` appears exactly once in `site-config.js`.** Its value is read from the page as Chrome loads it, so a commented-out old endpoint doesn't count, and a second mention fails the run. The client's files only ever run inside the browser, never on your machine directly.
 - **`_redirects` stays on the site:** no rule may point to another host, and no rule may use status `200` (a rewrite, or on Netlify a proxy, which would serve another host's content as the site's own).
 - **The folder holds only the site:** `index.html`, `404.html`, `_headers`, `_redirects`, `css/`, `js/` and `images/`. No dotfiles (`.git/`, `.env`), notes, backups or source maps; images are image files; SVGs contain no `<script>` tags or `on…=` event attributes.
 - **The Alpine files are the verified ones**, byte for byte.
@@ -161,6 +162,6 @@ node tests/browser-test.mjs --client path/to/client-site --allow "font-src https
 node tests/browser-test.mjs --client path/to/client-site --allow "header /images/* Cross-Origin-Resource-Policy"
 ```
 
-`--allow` can be repeated. A difference that isn't passed this way fails the run, and so does an `--allow` that isn't needed. A CSP exception can only add host sources such as `https://fonts.gstatic.com`. Keywords (`'unsafe-hashes'`, `'strict-dynamic'` and so on), schemes and `*` are rejected: they need a change to the template itself.
+`--allow` can be repeated. A difference that isn't passed this way fails the run, and so does an `--allow` that isn't needed. A CSP exception can only add host sources such as `https://fonts.gstatic.com`. Keywords (`'unsafe-hashes'`, `'strict-dynamic'` and so on), schemes and `*` are rejected: they need a change to the template itself. A `header` exception allows that header in that path's block, but its value isn't checked yet, so review it by hand.
 
 **The tests never contact anything outside your machine.** The form tests swap in a fake endpoint, and every request from a test page to another host is either answered by the test itself or blocked. Running the tests never sends anything to the client's real form provider.

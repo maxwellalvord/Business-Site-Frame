@@ -1,13 +1,17 @@
-// File-based security checks for a copy of site/: security headers, both
+// File-based security checks for a copy of site/: security headers, the
 // Content-Security-Policy copies, the folder contents and the vendor files.
-// No browser needed. Used by browser-test.mjs in both template and client mode.
+// Used by browser-test.mjs in both template and client mode.
+//
+// Nothing in the site folder is run here: files are only read as text. What
+// only a browser can tell (the meta tags it applies, the form endpoint after
+// site-config.js runs) is read from the loaded pages by browser-test.mjs and
+// passed in as `pageReads`.
 //
 // Every function takes the site folder to check and returns a list of
 // problems (plain strings). An empty list means the check passed.
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import vm from "node:vm";
 
 // Expected SHA-384 of every file in js/vendor/. When upgrading Alpine, update
 // this table (see "Upgrading Alpine" in the docs).
@@ -83,8 +87,10 @@ export function parseCspWithRepeats(csp) {
 
 export const parseCsp = (csp) => parseCspWithRepeats(csp).map;
 
-// The Content-Security-Policy <meta> tags a browser would see: HTML comments
-// are removed first, and the attributes may be in any order or quoting.
+// The Content-Security-Policy <meta> tags in a page's text: HTML comments are
+// removed first, and the attributes may be in any order or quoting. This is a
+// simplified reading that gives clear messages. The tests also read the tags
+// from the loaded page, and the two readings must match.
 function cspMetaContents(html) {
   const contents = [];
   for (const [tag] of html.replace(/<!--[\s\S]*?(-->|$)/g, "").matchAll(/<meta\b[^>]*>/gi)) {
@@ -95,44 +101,53 @@ function cspMetaContents(html) {
   return contents;
 }
 
-// Both CSP copies, plus anything that makes them ambiguous: not exactly one
-// meta tag, or a directive written more than once.
+// The pages with their own CSP meta tag. 404.html has a stricter policy than
+// index.html, so it's compared with the template's 404.html, not with _headers.
+export const META_PAGES = ["index.html", "404.html"];
+
+// Every CSP copy, plus anything that makes them ambiguous: not exactly one
+// meta tag in a page, or a directive written more than once.
 export function readPolicies(siteDir) {
-  const metas = cspMetaContents(fs.readFileSync(path.join(siteDir, "index.html"), "utf8"));
-  const meta = metas.length ? parseCspWithRepeats(metas[0]) : null;
-  const header = parseCspWithRepeats(siteWideHeaders(siteDir)["Content-Security-Policy"]);
   const problems = [];
-  if (metas.length !== 1) problems.push(`index.html must have exactly one Content-Security-Policy meta tag outside comments (found ${metas.length})`);
-  for (const [label, p] of [["index.html", meta], ["_headers", header]]) {
+  const metaText = {};
+  const metas = {};
+  for (const page of META_PAGES) {
+    const file = path.join(siteDir, page);
+    metaText[page] = fs.existsSync(file) ? cspMetaContents(fs.readFileSync(file, "utf8")) : [];
+    if (metaText[page].length !== 1) problems.push(`${page} must have exactly one Content-Security-Policy meta tag outside comments (found ${metaText[page].length})`);
+    metas[page] = metaText[page].length ? parseCspWithRepeats(metaText[page][0]) : null;
+  }
+  const header = parseCspWithRepeats(siteWideHeaders(siteDir)["Content-Security-Policy"]);
+  for (const [label, p] of [...META_PAGES.map((page) => [page, metas[page]]), ["_headers", header]]) {
     for (const d of new Set(p?.repeated || [])) problems.push(`${label}: ${d} appears more than once (browsers use only the first)`);
   }
-  return { meta: meta?.map ?? null, header: header.map, problems };
+  return { meta: metas["index.html"]?.map ?? null, notFound: metas["404.html"]?.map ?? null, header: header.map, metaText, problems };
 }
 
-// formEndpoint as the browser sees it: site-config.js is run in a sandbox and
-// window.SITE.formEndpoint is read, so commented-out lines don't count.
-// The file must also mention formEndpoint exactly once, so a commented-out
-// old endpoint or a later reassignment can't mislead a reader or the tests.
-export function readConfigEndpoint(siteDir) {
-  const src = fs.readFileSync(path.join(siteDir, "js", "site-config.js"), "utf8");
-  const problems = [];
-  const mentions = src.match(/\bformEndpoint\b/g)?.length ?? 0;
-  if (mentions !== 1) problems.push(`site-config.js mentions formEndpoint ${mentions} times; it must appear exactly once (remove commented-out or extra copies)`);
-  let endpoint = null;
-  try {
-    const sandbox = {};
-    sandbox.window = sandbox;
-    vm.runInNewContext(src, sandbox, { timeout: 1000, filename: "site-config.js" });
-    const value = sandbox.SITE?.formEndpoint;
-    if (typeof value === "string") endpoint = value;
-    else problems.push(`site-config.js: window.SITE.formEndpoint is ${value === undefined ? "missing" : "not a string"}`);
-  } catch (err) {
-    problems.push(`site-config.js couldn't be run: ${err.message}`);
+// The meta tags the browser applied (read from the loaded page) must be the
+// ones the file reading found, so text the browser reads differently can't
+// stand in for the real policy. Runs of whitespace count as one space.
+const sameText = (a, b) => a.replace(/[\t\n\f\r ]+/g, " ").trim() === b.replace(/[\t\n\f\r ]+/g, " ").trim();
+function pageReadProblems(page, fileMetas, read) {
+  if (!read) return [`${page}: not read in a browser, so its CSP meta tag can't be confirmed`];
+  const problems = [...read.problems];
+  for (const m of read.metas) if (!m.inHead) problems.push(`${page}: a Content-Security-Policy meta tag is outside <head>, where browsers ignore it`);
+  const browser = read.metas.map((m) => m.content);
+  if (browser.length !== fileMetas.length || browser.some((c, i) => !sameText(c, fileMetas[i]))) {
+    const list = (l) => (l.length ? l.map((c) => `"${c}"`).join(", ") : "none");
+    problems.push(`${page}: the browser reads a different Content-Security-Policy meta tag than the file shows (browser: ${list(browser)}; file: ${list(fileMetas)})`);
   }
-  return { endpoint, problems };
+  return problems;
 }
 
-export const readEndpoint = (siteDir) => readConfigEndpoint(siteDir).endpoint;
+// site-config.js must mention formEndpoint exactly once, so a commented-out
+// old endpoint or a later reassignment can't mislead a reader. The file is
+// only read as text here. The value itself is read from the loaded page.
+export function configMentionProblems(siteDir) {
+  const src = fs.readFileSync(path.join(siteDir, "js", "site-config.js"), "utf8");
+  const mentions = src.match(/\bformEndpoint\b/g)?.length ?? 0;
+  return mentions === 1 ? [] : [`site-config.js mentions formEndpoint ${mentions} times; it must appear exactly once (remove commented-out or extra copies)`];
+}
 
 // "--allow" values. Two forms:
 //   "<csp-directive> <host-source> [<host-source> ...]"   e.g. "font-src https://fonts.gstatic.com"
@@ -229,7 +244,11 @@ function baselineProblems(label, csp, base, { endpointOrigin, allows, used }) {
 
 // All policy checks, grouped so the output names what failed.
 // templateDir: the template's own site/ folder (the baseline).
-export function policyChecks(siteDir, templateDir, allowList = [], { exactHsts = false } = {}) {
+// pageReads: what the browser read from the loaded pages (readSite() in
+// browser-test.mjs): { endpoint, endpointProblems, pages: { "<page>":
+// { metas: [{ content, inHead }], problems } } }. Without it, the checks that
+// need it fail.
+export function policyChecks(siteDir, templateDir, allowList = [], { exactHsts = false, pageReads = null } = {}) {
   const allows = parseAllows(allowList);
   const used = new Set();
   const groups = [];
@@ -266,19 +285,27 @@ export function policyChecks(siteDir, templateDir, allowList = [], { exactHsts =
   const site = readPolicies(siteDir);
   const base = readPolicies(templateDir);
   add("each CSP copy is written once, with no directive repeated", site.problems);
-  const config = readConfigEndpoint(siteDir);
-  add("site-config.js sets formEndpoint exactly once", config.problems);
+  add("the CSP meta tags the browser applies are the ones in the files (index.html, 404.html)",
+    META_PAGES.flatMap((page) => pageReadProblems(page, site.metaText[page], pageReads?.pages?.[page])));
+  const endpoint = pageReads?.endpoint ?? null;
+  add("site-config.js sets formEndpoint exactly once", [
+    ...configMentionProblems(siteDir),
+    ...(pageReads ? pageReads.endpointProblems : ["formEndpoint wasn't read from the loaded page"]),
+  ]);
   let endpointOrigin = null;
-  try { endpointOrigin = config.endpoint ? new URL(config.endpoint.trim()).origin : null; } catch {}
+  try { endpointOrigin = endpoint ? new URL(endpoint.trim()).origin : null; } catch {}
 
-  add("CSP hard limits (both copies)", [
+  add("CSP hard limits (every copy)", [
     ...hardFloorProblems("index.html", site.meta, { headerCopy: false }),
     ...hardFloorProblems("_headers", site.header, { headerCopy: true }),
+    ...hardFloorProblems("404.html", site.notFound, { headerCopy: false }),
   ]);
   const ctx = { endpointOrigin, allows, used };
   add("CSP matches the template, apart from the form endpoint and --allow exceptions", [
     ...baselineProblems("index.html", site.meta, base.meta, ctx),
     ...baselineProblems("_headers", site.header, base.header, ctx),
+    // The 404 page sends no requests, so the form endpoint isn't exempt there.
+    ...baselineProblems("404.html", site.notFound, base.notFound, { ...ctx, endpointOrigin: null }),
   ]);
 
   // The two copies must agree, apart from the header-only directives.
