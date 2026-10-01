@@ -21,7 +21,7 @@ For the "reuse this for a new client" steps, deployment and the pre-launch check
    - [showcase](#43-showcase--menu--gallery-and-lightbox)
    - [faq](#44-faq--accordion)
    - [contactForm](#45-contactform--validated-contact-form)
-   - [Footer year](#46-footer-year)
+   - [footer](#46-footer--copyright-year)
 5. [How the hours calculation works](#5-how-the-hours-calculation-works)
 6. [Styling hooks used by Alpine](#6-styling-hooks-used-by-alpine)
 7. [Accessibility built into the components](#7-accessibility-built-into-the-components)
@@ -38,14 +38,16 @@ The website is a single static page in the `site/` folder. There is no build ste
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| Alpine.js 3.14.1 | `site/js/vendor/` (self-hosted) | Reactivity and `x-` directives in the HTML |
+| Alpine.js 3.14.1, **CSP build** | `site/js/vendor/` (self-hosted) | Reactivity and `x-` directives in the HTML, without `eval` (see [§2](#the-csp-build-rule)) |
 | Alpine Focus plugin 3.14.1 | `site/js/vendor/` (self-hosted) | Provides `x-trap` for the lightbox |
 | `js/site-config.js` | `site/` | All per-business data, exposed as `window.SITE` |
-| `js/components.js` | `site/` | Hours helper functions + every Alpine component and store |
+| `js/components.js` | `site/` | Hours helper functions, config checks, and every Alpine component and store |
 | `index.html` | `site/` | Markup; each feature attaches to a component with `x-data` |
 | `css/styles.css` | `site/` | Styles, including the classes Alpine toggles |
 
 The design rule throughout: **data lives in `site-config.js`, behaviour lives in `components.js`, markup lives in `index.html`.** Reusing the template for a new business should normally mean editing only the config file and the copy in the HTML.
+
+Because the site uses Alpine's CSP build, this rule is also enforced: **the HTML can't contain JavaScript.** Every `x-`, `:` and `@` attribute names a property, getter or method in `components.js`. See [The CSP build rule](#the-csp-build-rule).
 
 ### Project files
 
@@ -57,10 +59,12 @@ site/                         THE WEBSITE: the only folder that is deployed or c
   _redirects                  Returns 404 for project paths if they're uploaded by mistake (Netlify only)
   css/styles.css              All styles, mobile-first; theme variables in :root
   js/site-config.js           Per-business data (window.SITE)
-  js/components.js            Hours helpers + all Alpine components and the hours store
-  js/vendor/                  Self-hosted Alpine core and Focus plugin (always the same version)
+  js/components.js            Hours helpers, config checks, all Alpine components and the hours store
+  js/vendor/                  Self-hosted Alpine (CSP build) and Focus plugin (always the same version)
   images/                     Placeholder photos
 tests/browser-test.mjs        Automated headless-Chrome tests; template and --client modes (not deployed)
+tests/site-policy.mjs         File checks used by the browser tests: headers, CSP, folder contents, vendor hashes (not deployed)
+tests/hours.test.mjs          Node tests for the opening-hours helpers and config checks (not deployed)
 CHANGELOG.md                  Template releases; security-relevant changes marked 🔒 (not deployed)
 screenshots/                  Images used in the README (not deployed)
 docs/                         This documentation (not deployed)
@@ -91,9 +95,9 @@ Each client site is a **copy of `site/`** taken on one day. Fixes made to the te
 
 | What | Where | Purpose |
 | --- | --- | --- |
-| **Release tag** | git tag `vMAJOR.MINOR.PATCH` | Marks a launch-ready template state. `v1.0.0` isn't tagged yet; it waits on choosing the host and form provider, a manual autofill test, and a staging header scan. |
+| **Release tag** | git tag `vMAJOR.MINOR.PATCH` | Marks a launch-ready template state. `v1.0.0` isn't tagged yet; see the [Roadmap](#11-roadmap). |
 | **Changelog** | `CHANGELOG.md` (project root) | What changed in each release. **🔒 Security** marks changes that must go out to live client sites. 1.0.0 is listed as "Unreleased". |
-| **Client register** | Kept by whoever owns the pre-launch checklist, **outside `site/` and outside anything public** | Client, live URL, the template release it was copied from, launch date, form provider. When a 🔒 release ships, the register says which sites need it. |
+| **Client register** | Kept by whoever owns the pre-launch checklist, **outside `site/` and outside anything public** | Client, live URL, the template release it was copied from, launch date, form provider, and every `--allow` exception the client's test run needs, with the reason (see [§10](#10-testing)). When a 🔒 release ships, the register says which sites need it. |
 
 **Update policy:** a security-relevant release should go out to every live client site within an agreed window (suggested: 14 days for anything of Medium severity or above).
 
@@ -109,12 +113,14 @@ From the `<head>` of `site/index.html`:
 <script defer src="js/site-config.js"></script>
 <script defer src="js/components.js"></script>
 <script defer src="js/vendor/alpine-focus-3.14.1.min.js"></script>
-<script defer src="js/vendor/alpine-3.14.1.min.js"></script>
+<script defer src="js/vendor/alpine-csp-3.14.1.min.js"></script>
 ```
 
-These paths are relative to `index.html`, so they didn't change when the site moved into `site/`.
+These paths are relative to `index.html`.
 
-Alpine is **self-hosted**: no script loads from a third-party domain. This removes the risk of a compromised CDN, keeps `script-src` limited to `'self'` plus `'unsafe-eval'` (which the standard Alpine build needs until the planned move to Alpine's CSP build), and lets the site work offline.
+Alpine is **self-hosted**: no script loads from a third-party domain. This removes the risk of a compromised CDN, keeps `script-src` to `'self'` alone, and lets the site work offline.
+
+The core file is Alpine's **CSP build** (the `@alpinejs/csp` package), not the standard `alpinejs` build. The standard build turns each attribute value into code with `new Function()`, which needs `'unsafe-eval'` in the Content-Security-Policy. The CSP build reads attribute values without ever running them as code, so the policy can block `eval` completely.
 
 **The order matters.** `defer` scripts run in document order once the HTML is parsed, so:
 
@@ -125,6 +131,32 @@ Alpine is **self-hosted**: no script loads from a third-party domain. This remov
 
 If Alpine core is moved above `components.js`, the `alpine:init` event fires before anyone is listening and every component on the page fails with "`mobileNav` is not defined"-style errors. Keep Alpine core **last**.
 
+### The CSP build rule
+
+The CSP build only understands **names**, not JavaScript. Every `x-`, `:` and `@` attribute value in `index.html` must be one of these:
+
+- a property, getter or method name: `x-show="isOpen"`, `@click="close"`, `:class="navClass"`
+- a dotted path: `x-text="item.name"`, `x-for="day in $store.hours.days"`, `x-show="$store.hours.available"`
+
+Anything else is an **expression**, and the CSP build can't run it: operators (`===`, `+`, `&&`), `!`, `? :`, `?.`, template strings, and calls with arguments such as `toggle(i)` or `validateField('email')`. `x-model` is also out, because it compiles to an assignment. Put the logic in a getter or method in `components.js` and name it from the HTML instead:
+
+| Don't write (needs `eval`) | Write | In `components.js` |
+| --- | --- | --- |
+| `:class="{ 'is-open': open }"` | `:class="navClass"` | `get navClass() { return { "is-open": this.open }; }` |
+| `x-show="categories.length > 1"` | `x-show="hasFilters"` | `get hasFilters() { return this.categories.length > 1; }` |
+| `@click="toggle(i)"` inside an `x-for` | `@click="toggleThis"` | `toggleThis() { this.toggle(this.i); }` |
+| `x-model="fields.email"` | `data-field="email" :value="fields.email" @input="onInput"` | `onInput(event)` reads `event.target.dataset.field` |
+
+How methods behave:
+
+- **A method named from the HTML is called with the element's whole Alpine scope as `this`.** Inside an `x-for`, that includes the loop variables, so a method can read `this.item`, `this.i` or `this.day`. That's how a single method works for every row of a list without taking an argument.
+- **An event handler receives the event** as its argument: `onInput(event)`, `onBlur(event)`.
+- **Values read from the HTML must never be `undefined`.** The CSP build logs a console warning for each one. That's why `components.js` turns optional config fields into `""` or `null` before the page sees them.
+
+When the rule is broken, the console shows a warning such as *"Alpine Expression Error: … Alpine is unable to interpret the following expression using the CSP-friendly build"*, and that binding does nothing. The browser tests fail on **any** console warning, so a broken binding can't pass the tests unnoticed.
+
+The same rule is written in a comment in the `<head>` of `index.html` and at the top of `components.js`.
+
 ### Upgrading Alpine
 
 Alpine core and the Focus plugin must **always be the same version**, and both files must be replaced in the same change. Replacing only one, or changing a filename without updating `index.html`, breaks every component on the page at once.
@@ -134,30 +166,30 @@ Self-hosting means **no update ever arrives automatically**. There's no `package
 Run these from the project root:
 
 1. **Read the release notes** for every version between the current one and the new one. Look for security fixes and breaking changes.
-2. Download both files for the new version (replace `X.Y.Z`):
+2. Download both files for the new version (replace `X.Y.Z`). The core file comes from the **`@alpinejs/csp`** package, not `alpinejs`:
    ```sh
-   curl -sSfL -o site/js/vendor/alpine-X.Y.Z.min.js       https://cdn.jsdelivr.net/npm/alpinejs@X.Y.Z/dist/cdn.min.js
+   curl -sSfL -o site/js/vendor/alpine-csp-X.Y.Z.min.js   https://cdn.jsdelivr.net/npm/@alpinejs/csp@X.Y.Z/dist/cdn.min.js
    curl -sSfL -o site/js/vendor/alpine-focus-X.Y.Z.min.js https://cdn.jsdelivr.net/npm/@alpinejs/focus@X.Y.Z/dist/cdn.min.js
    ```
-3. Verify the downloads. Fetch the same files from a second source (e.g. `https://unpkg.com/alpinejs@X.Y.Z/dist/cdn.min.js`) and confirm the SHA-384 hashes match:
+3. Verify the downloads. Fetch the same files from a second source (e.g. `https://unpkg.com/@alpinejs/csp@X.Y.Z/dist/cdn.min.js`) and confirm the SHA-384 hashes match:
    ```sh
    openssl dgst -sha384 -binary <file> | openssl base64 -A
    ```
 4. Update both `<script src>` paths in `site/index.html`, and the version in the table in [section 1](#1-overview).
 5. Delete the old files from `site/js/vendor/`. The tests fail if any other file is left in that folder.
-6. **Update the tests** in `tests/browser-test.mjs`:
-   - the `VENDOR_SHA384` table near the top: new filenames and their verified hashes
-   - both `Alpine.version === '3.14.1'` checks (template page and client page): the new version
+6. **Update the tests:**
+   - the `VENDOR_SHA384` table at the top of **`tests/site-policy.mjs`**: new filenames and their verified hashes
+   - both `Alpine.version === '3.14.1'` checks in `tests/browser-test.mjs` (template page and client page): the new version
 7. Update the hash table below.
-8. Run the [browser tests](#10-testing), and test every component (nav, hours, filters, lightbox, FAQ, form) by hand with the browser console open. Look for errors and CSP violations.
+8. Run the [tests](#10-testing), and test every component (nav, hours, filters, lightbox, FAQ, form) by hand with the browser console open. Look for errors, warnings and CSP violations. A new CSP build may read some attribute values differently; the tests' "no console warnings" checks are there to catch that.
 9. Add a `CHANGELOG.md` entry (🔒 if the upgrade includes a security fix). Then roll the release out to live client sites using the client register.
 
-The 3.14.1 files currently in `site/js/vendor/` were checked on 2026-09-30, and checked again after the move into `site/`. The copies from jsDelivr and unpkg were byte-identical. These same values are in `VENDOR_SHA384` in the tests, and **the test run fails if a single byte changes**:
+The 3.14.1 files currently in `site/js/vendor/` were checked on 2026-09-30. The copies from jsDelivr and unpkg were byte-identical. These same values are in `VENDOR_SHA384` in `tests/site-policy.mjs`, and **the test run fails if a single byte changes**:
 
-| File | SHA-384 |
-| --- | --- |
-| `alpine-3.14.1.min.js` | `l8f0VcPi/M1iHPv8egOnY/15TDwqgbOR1anMIJWvU6nLRgZVLTLSaNqi/TOoT5Fh` |
-| `alpine-focus-3.14.1.min.js` | `bKXNU7o2Y3Uk/F2PB6U0bMyGZf6pLDnePM70U7sTE3cXUQ+JLgzrr/kwipEh0p23` |
+| File | Package | SHA-384 |
+| --- | --- | --- |
+| `alpine-csp-3.14.1.min.js` | `@alpinejs/csp@3.14.1` | `rCnzN/DdCU4dORuP99iqMm3OJPQKDUtMAjgeZ9nfqF9Fz4P/n4BGlOrtfsaiDNAL` |
+| `alpine-focus-3.14.1.min.js` | `@alpinejs/focus@3.14.1` | `bKXNU7o2Y3Uk/F2PB6U0bMyGZf6pLDnePM70U7sTE3cXUQ+JLgzrr/kwipEh0p23` |
 
 **Line endings.** `.gitattributes` marks `site/js/vendor/**` as `-text`, so git never converts line endings in these files. Without it, a Windows checkout could rewrite them and the hashes above would stop matching. Keep that rule if you rename or move the vendor folder.
 
@@ -173,23 +205,32 @@ The policy now lives in **three** places:
 | `site/_headers` | HTTP header | Same as the `<meta>` tag, plus `frame-ancestors 'none'` and `upgrade-insecure-requests`, which only work as a header. |
 | `site/404.html` | `<meta>` tag | **Deliberately stricter**: `script-src 'none'`, `connect-src 'none'`, `form-action 'none'`. The 404 page has no scripts or form. |
 
-**`index.html` and `_headers` must stay in sync.** The tests now check this. They parse both policies and fail unless every directive matches, except `frame-ancestors` and `upgrade-insecure-requests`, which must appear in `_headers` only. They also fail if either copy contains `'unsafe-inline'`, or lacks `object-src 'none'` or `base-uri 'none'`. `404.html` isn't part of the comparison. The header policy is:
+**`index.html` and `_headers` must stay in sync.** The tests check this: they parse both policies and fail unless every directive matches, except `frame-ancestors` and `upgrade-insecure-requests`, which must appear in `_headers` only. `404.html` isn't part of the comparison. The header policy is:
 
 ```
-default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self'; img-src 'self';
+default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self';
 connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none';
 frame-ancestors 'none'; upgrade-insecure-requests
 ```
 
 - The policy allows scripts, styles and images only from the site itself.
-- It needs `'unsafe-eval'` because the standard Alpine build evaluates `x-` attribute expressions with `new Function()`.
+- **There's no `'unsafe-eval'`.** The page can't turn text into code with `eval()` or `new Function()`. The tests prove this with a probe script that tries `new Function()` under each policy copy and must be blocked (see [§10](#10-testing)).
 - `connect-src` controls where the contact form may send data. See [Receive real form submissions](#8-common-tasks).
-- `img-src` is `'self'` only. **`data:` images are not allowed**. If a design later needs an inline SVG icon in CSS, add `data:` back to `img-src` in both files.
+- `img-src` is `'self'` only. **`data:` images are not allowed.**
+
+**Hard limits.** The tests fail on any of these in either copy, in the template and in every client site. `--allow` can't override them:
+
+- `'unsafe-inline'` or `'unsafe-eval'` anywhere
+- the wildcard `*`, or a scheme-wide source such as `https:`, `http:`, `data:` or `blob:` (each allows any host or any inline content)
+- `object-src` or `base-uri` set to anything other than `'none'`, or (in `_headers`) `frame-ancestors` set to anything other than `'none'`
+
+So a design that needs an inline `data:` SVG icon in CSS can't simply add `data:` to `img-src`. Save the icon as a file in `images/` instead.
 
 What this means when editing:
 
-- **No inline `<script>` or `<style>` blocks, and no `style="…"` attributes.** Put code in `js/` and styles in `css/styles.css`. Alpine's own `x-` expressions are allowed because of `'unsafe-eval'`.
-- **No scripts, fonts, styles or images from other domains** (e.g. Google Fonts, analytics) unless you add their origin to the policy in **both** `index.html` and `_headers`. If `404.html` also needs it (a web font, for example), add it there as well. Don't loosen its `script-src 'none'`.
+- **No inline `<script>` or `<style>` blocks, and no `style="…"` attributes.** Put code in `js/` and styles in `css/styles.css`.
+- **No JavaScript in Alpine attributes.** See [The CSP build rule](#the-csp-build-rule).
+- **No scripts, fonts, styles or images from other domains** (e.g. Google Fonts, analytics) unless you add their origin to the policy in **both** `index.html` and `_headers`. If `404.html` also needs it (a web font, for example), add it there as well. Don't loosen its `script-src 'none'`. On a client site, every added origin must also be passed to the client tests with `--allow` and recorded in the client register (see [§10](#10-testing)).
 
 ### Other headers in `_headers`
 
@@ -205,6 +246,8 @@ What this means when editing:
 
 `_headers` is read by Netlify and Cloudflare Pages from the root of the published folder. On another host, the same headers must be set in that host's config.
 
+**Keep all the security headers in the single `/*` block.** The tests require exactly one `/*` block, with each header set once, and every header above with exactly the value shown. The only allowed difference is HSTS on a client site, which may be `max-age=31536000; includeSubDomains` (or a longer `max-age`). A block for another path, such as `/images/*`, may set other headers, like `Cache-Control`. If it sets a security header, the client tests fail unless that header is passed with `--allow "header <path> <Header-Name>"`.
+
 ---
 
 ## 3. Configuration: `window.SITE`
@@ -216,7 +259,7 @@ Defined in [site/js/site-config.js](../site/js/site-config.js). Components read 
 | `timeZone` | string (IANA, e.g. `"America/Los_Angeles"`) | `$store.hours` | "Open now" is worked out in this zone, not the visitor's. |
 | `hours` | object keyed `mon`…`sun` | `$store.hours` | Each day is an array of `{ open, close }` in 24-hour `"HH:MM"`. |
 | `faqs` | array of `{ q, a }` | `faq` | Plain text only; rendered with `x-text`. |
-| `showcase.layout` | `"menu"` or `"gallery"` | `showcase` | Switches between a priced list and a photo grid. |
+| `showcase.layout` | `"menu"` or `"gallery"` | `showcase` | Switches between a priced list and a photo grid. Any other value is treated as `"menu"`. |
 | `showcase.categories` | array of `{ name, items }` | `showcase` | Each category becomes a filter button. |
 | `formEndpoint` | string (full `https://` URL) | `contactForm` | Must be a full `https://` URL with a host and **no username or password**. Upper-case `HTTPS://` and surrounding spaces are accepted. Empty is **for local development only**: on `file://`/`localhost` submissions are logged to the console; on any other host the form shows its error message. Its origin must also be in the CSP `connect-src`. |
 
@@ -224,7 +267,30 @@ Defined in [site/js/site-config.js](../site/js/site-config.js). Components read 
 >
 > The code enforces one part of this: an endpoint like `https://user:secret@…` is rejected at page load (see [4.5](#45-contactform--validated-contact-form)). By then, though, the secret is already in a public file. **The rejection tells you about the mistake after the fact; it doesn't protect the secret. Rotate any credential that was ever put there.**
 
-There is **no validation of the config yet** (planned). A typo that makes `site-config.js` invalid JavaScript, or a missing key, currently breaks every component on the page. Check the browser console after every config edit.
+### What happens when the config is wrong
+
+`components.js` checks the config when Alpine starts. **A mistake only affects its own part of the page**, and it's reported in the browser console once. The navigation, and above all the contact form, keep working whatever is wrong with the config.
+
+| Mistake | What the visitor sees | Console message |
+| --- | --- | --- |
+| A bad time, such as `"7am"`, `"7:30"` or `"24:00"` | The "Open now" badge and hours table are hidden, and "Please call us for our current opening hours." is shown instead. Everything else works. | *Opening hours are hidden because of a problem in site-config.js: hours.mon[0].open: invalid time "7am": use 24-hour "HH:MM", such as "07:30"* |
+| A misspelled `timeZone` (e.g. `"America/Portland"`) | Same as above | *… timeZone "America/Portland" isn't a valid IANA time zone, such as "America/Los_Angeles"* |
+| `timeZone` missing | Same as above | *… timeZone is missing* |
+| `hours` missing, or not an object | Same as above | *… hours is missing or isn't an object* |
+| A day key that isn't `mon`…`sun` (e.g. `monday`) | Same as above | *… hours.monday: unknown day; use sun, mon, tue, wed, thu, fri, sat* |
+| A day that isn't a list (e.g. `mon: { open, close }`) | Same as above | *… hours.mon must be a list of { open, close } ranges, or [] when closed* |
+| `faqs` set but not a list | The FAQ list is empty. | *faqs in site-config.js must be a list.* |
+| `showcase.categories` set but not a list | The menu / gallery is empty. | *showcase.categories in site-config.js must be a list.* |
+| `site-config.js` missing (404), or a syntax error in it | Hours hidden with the "please call us" line; FAQ and menu empty. The nav and contact form still work. For a syntax error, the browser also reports the error itself first. | *site-config.js didn't load, so the page is using empty settings.* |
+| `formEndpoint` invalid | The form shows its error message on submit. | See [4.5](#45-contactform--validated-contact-form). |
+
+Some gaps are filled in quietly, without a console message:
+
+- A missing `faqs` or `showcase` key gives an empty FAQ or menu.
+- A category without an `items` list is left out.
+- A missing `q`, `a`, item `name`, `description` or `price` shows as empty text. An `image` without a `src` is treated as no image.
+
+**Still check the page and the console after every config edit.** The checks catch mistakes in format, not wrong content: a valid but wrong time zone, or hours typed for the wrong day, look fine to the code.
 
 ### Hours format
 
@@ -239,8 +305,9 @@ hours: {
 }
 ```
 
-- A missing day key is treated the same as `[]` (closed).
-- A close time earlier than (or equal to) the open time means the range ends the next day.
+- Times are **strict 24-hour `"HH:MM"`**, from `"00:00"` to `"23:59"`, with two digits each side: `"07:00"`, not `"7:00"` or `"7am"`. For a range that ends at midnight, close at `"00:00"`.
+- A missing day key is treated the same as `[]` (closed). `hours: {}` means closed every day: the badge shows "Closed" with no opening time.
+- A close time earlier than the open time means the range ends the next day. A close time **equal** to the open time (e.g. `"00:00"`–`"00:00"`) means open for 24 hours.
 
 ### Showcase items
 
@@ -260,39 +327,53 @@ hours: {
 
 ## 4. Components
 
-All components are registered in [site/js/components.js](../site/js/components.js) inside the `alpine:init` listener. Reusable components use `Alpine.data(...)` and are attached with `x-data="name"`; the shared hours state uses `Alpine.store(...)`.
+All components are registered in [site/js/components.js](../site/js/components.js) inside the `alpine:init` listener. Reusable components use `Alpine.data(...)` and are attached with `x-data="name"`; the shared hours state uses `Alpine.store(...)`. Under the CSP build every `x-data` must name a registered component; a bare `x-data` doesn't work.
+
+The tables below list everything the HTML names. Because of [the CSP build rule](#the-csp-build-rule), each component has small getters and methods that exist only so the HTML has something to name: `navClass`, `hasFilters`, `toggleThis` and so on. Methods marked *(row)* are used inside an `x-for` and read the loop variable through `this` instead of taking an argument.
 
 ### 4.1 `mobileNav` — header navigation
 
 **Attached to:** `<header class="site-header" x-data="mobileNav">`
 
-| State / method | Description |
+| State / getter / method | Description |
 | --- | --- |
-| `open` | `true` while the small-screen menu is expanded. |
+| `open` | `true` while the small-screen menu is expanded. Bound to the button's `aria-expanded`. |
+| `navClass` *(getter)* | `{ "is-open": open }`, bound to the `<nav>`'s `:class`. |
 | `toggle()` | Flips `open`. Bound to the hamburger button. |
 | `close()` | Sets `open` to `false`. |
 
-**Closes when:** a nav link is clicked, Escape is pressed anywhere (`@keydown.escape.window`), or the user clicks outside the header (`@click.outside`).
+**Closes when:** a nav link is clicked, Escape is pressed anywhere (`@keydown.escape.window="close"`), or the user clicks outside the header (`@click.outside="close"`).
 
 The component only tracks a flag and adds `.is-open` to the `<nav>`. CSS decides what that means: below 760px the nav is a dropdown; at 760px and up it is always visible and the toggle button is hidden.
 
 ### 4.2 `$store.hours` — "Open now" status and hours table
 
-**Used by:** the status badge in the hero, and the hours table in `#hours`. Both use a bare `x-data` so Alpine processes them, then read from `$store.hours`.
+**Used by:** the status badge in the hero (`x-data="hoursBadge"`) and the hours table in `#hours` (`x-data="hoursTable"`). Both read their values from `$store.hours`.
 
 It's a **store** rather than a component because two separate parts of the page need the same live value. A store is a single shared object, so both update together.
 
-| Property | Description |
+| Property / getter / method | Description |
 | --- | --- |
+| `available` | `true` once the hours config has passed its checks and the status has been worked out. The badge and table are shown only while it's `true`. |
+| `unavailable` *(getter)* | `!available`. Shows the "Please call us for our current opening hours." line. |
 | `status.isOpen` | `true` if the business is open right now. |
 | `status.label` | `"Open now"` or `"Closed"`. |
 | `status.detail` | e.g. `"Closes at 3 PM"`, `"Opens tomorrow at 7 AM"`, or `""` if there are no hours at all. |
-| `todayIndex` | Today's day number (0 = Sunday) in the business's time zone. Used to highlight today's row. |
+| `badgeClass` *(getter)* | `"is-open"` or `"is-closed"`, bound to the badge's `:class`. |
+| `detailText` *(getter)* | `"· Closes at 3 PM"`, or `""` when there's no detail. |
+| `todayIndex` | Today's day number (0 = Sunday) in the business's time zone, or `null` until the status is known. Used to highlight today's row. |
 | `days` | Seven table rows, Monday first: `{ index, name, text }` where `text` is like `"7 AM – 3 PM, 6 PM – 12:30 AM"` or `"Closed"`. Built once at startup. |
-| `init()` | Called automatically by Alpine. Runs `refresh()` immediately, then every 60 seconds. |
-| `refresh()` | Recalculates `status` and `todayIndex` from the current time. |
+| `init()` | Called automatically by Alpine. Checks the config with `validateHours()` and builds `days`. If the check fails, it logs the problem (see [§3](#what-happens-when-the-config-is-wrong)), leaves `available` `false` and stops. Otherwise it runs `refresh()` immediately, then every 60 seconds. |
+| `refresh()` | Recalculates `status` and `todayIndex` from the current time and sets `available`. If that throws, it logs the error and sets `available` to `false`. |
 
-The badge carries `x-cloak`, so it stays hidden until Alpine has filled it in. Visitors never see an empty badge flash.
+The two components that read the store:
+
+| Component | Attached to | Getter / method |
+| --- | --- | --- |
+| `hoursBadge` | `<p class="status-badge">` in the hero | None. It exists only because the CSP build can't use a bare `x-data`. |
+| `hoursTable` | The `<div>` around the hours table | `rowClass()` *(row)*: `{ "is-today": true }` for today's row (`this.day.index === $store.hours.todayIndex`). |
+
+The badge and the "please call us" line carry `x-cloak`, so they stay hidden until Alpine has decided which to show. Visitors never see an empty badge flash.
 
 See [section 5](#5-how-the-hours-calculation-works) for the maths.
 
@@ -302,15 +383,24 @@ See [section 5](#5-how-the-hours-calculation-works) for the maths.
 
 | State / getter / method | Description |
 | --- | --- |
-| `layout` | From config. Applied as a `layout-menu` or `layout-gallery` class on the list. |
-| `categories` | From config. |
+| `layout` | From config: `"menu"` or `"gallery"`. |
+| `categories` | From config, normalised: every item has `name`, `description` and `price` as strings (`""` when missing) and `image` as `{ src, alt }` or `null`. |
 | `activeCategory` | Index of the selected filter button (starts at `0`). |
 | `items` *(getter)* | Items in the active category. |
 | `images` *(getter)* | Only those items that have an `image`. The lightbox steps through these. |
 | `isOpen` | Whether the lightbox is showing. |
 | `index` | Position within `images` of the photo currently shown. |
-| `current` *(getter)* | `images[index]`, or `undefined` if the category has no photos. |
+| `current` *(getter)* | `images[index]`, or `null` if the category has no photos. |
 | `caption` *(getter)* | `"Name · Price"`, or just the name when there's no price. |
+| `layoutClass` *(getter)* | `"layout-menu"` or `"layout-gallery"`, bound to the list's `:class`. |
+| `hasFilters` *(getter)* | `true` when there's more than one category. Shows the filter buttons. |
+| `hasSeveralImages` *(getter)* | `true` when there's more than one photo. Shows the lightbox's previous / next buttons. |
+| `currentSrc`, `currentAlt` *(getters)* | The lightbox image's `src` (`null` when there's no photo, which leaves `src` unset) and `alt`. |
+| `counter` *(getter)* | `"2 / 5"` in the lightbox caption. |
+| `isActiveCategory()` *(row)* | `true` for the active filter button (`this.i`). Bound to `aria-pressed`. |
+| `selectThisCategory()` *(row)* | Calls `selectCategory(this.i)`. |
+| `openThisItem()` *(row)* | Calls `open(this.item)`. |
+| `enlargeLabel()` *(row)* | `"Enlarge photo: <name>"`, the thumbnail's hidden button text. |
 | `selectCategory(i)` | Switches category and closes the lightbox. |
 | `open(item)` | Opens the lightbox on that item. |
 | `close()`, `next()`, `prev()` | Lightbox controls. `next`/`prev` wrap around. |
@@ -318,11 +408,10 @@ See [section 5](#5-how-the-hours-calculation-works) for the maths.
 **Behaviour details**
 
 - Filter buttons are hidden when there's only one category.
-- The thumbnail button is rendered with `x-if` (not `x-show`), so items without an image get no button at all. There's nothing empty for keyboard users to tab to.
+- The thumbnail button is rendered with `x-if="item.image"` (not `x-show`), so items without an image get no button at all. There's nothing empty for keyboard users to tab to.
 - The lightbox uses `x-trap.noscroll="isOpen"` from the Focus plugin: Tab stays inside the dialog, page scrolling is locked, and focus returns to the thumbnail on close.
 - Lightbox keyboard controls: **Esc** closes, **←/→** move between photos. Clicking the dark backdrop (`@click.self`) also closes it.
 - `close()` deliberately leaves `index` alone, so the image doesn't go blank during the fade-out transition.
-- The image binding uses optional chaining (`current?.image.src`) because `current` can be `undefined`.
 
 ### 4.4 `faq` — accordion
 
@@ -330,25 +419,43 @@ See [section 5](#5-how-the-hours-calculation-works) for the maths.
 
 | State / method | Description |
 | --- | --- |
-| `items` | `SITE.faqs`. |
+| `items` | `SITE.faqs`, normalised to `{ q, a }` strings. |
 | `openIndex` | Index of the open answer, or `null` if none. |
 | `toggle(i)` | Opens question `i`, or closes it if it's already open. |
 | `isOpen(i)` | `true` if question `i` is open. |
+| `toggleThis()` *(row)* | Calls `toggle(this.i)`. Bound to the question button. |
+| `isThisOpen()` *(row)* | `isOpen(this.i)`. Bound to `aria-expanded` and the answer's `x-show`. |
+| `questionId()`, `answerId()` *(row)* | `"faq-q-<i>"` and `"faq-a-<i>"`. |
 
-Only one answer is open at a time. Each question/answer pair gets matching `id`, `aria-controls`, `aria-labelledby` and `aria-expanded` attributes generated from its index.
+Only one answer is open at a time. Each question/answer pair gets matching `id`, `aria-controls`, `aria-labelledby` and `aria-expanded` attributes from `questionId()`, `answerId()` and `isThisOpen()`.
 
 ### 4.5 `contactForm` — validated contact form
 
-**Attached to:** `<form x-data="contactForm" @submit.prevent="submit()" novalidate>`
+**Attached to:** `<form x-data="contactForm" @submit.prevent="submit" novalidate>`
 
-| State / method | Description |
+| State / getter / method | Description |
 | --- | --- |
-| `fields` | `{ name, email, phone, message, hp }`, bound with `x-model`. `hp` is the honeypot. |
+| `fields` | `{ name, email, phone, message, hp }`. `hp` is the honeypot. |
 | `errors` | One message per validated field; `""` means valid. |
 | `status` | `"idle"` → `"sending"` → `"success"` or `"error"`. |
+| `invalid` *(getter)* | `{ name: true/false, … }`, one flag per validated field. Bound to each input's `aria-invalid` (`:aria-invalid="invalid.email"`). |
+| `isSending`, `isSuccess`, `isError` *(getters)* | `status` as flags. `isSending` disables the button; the other two show the success or error message. |
+| `buttonLabel` *(getter)* | `"Send message"`, or `"Sending…"` while sending. |
+| `onInput(event)` | Copies the input's value into `fields[<data-field>]`, and re-checks the field if it's already showing an error. |
+| `onBlur(event)` | Checks the field named by the input's `data-field`. |
 | `validateField(name)` | Runs that field's rule, stores the message, returns `true` if valid. |
 | `validateAll()` | Validates **every** field (not stopping at the first failure) so all errors show at once. |
 | `submit()` | Validates, handles the honeypot, sends, and updates `status`. |
+
+**How the inputs are bound.** The CSP build can't use `x-model`, so each input binds its value one way and reports changes through one shared handler:
+
+```html
+<input id="email" … data-field="email" :value="fields.email"
+       @input="onInput" @blur="onBlur"
+       :aria-invalid="invalid.email" aria-describedby="email-error">
+```
+
+`data-field` names the key in `fields`. `:value` writes the field back to the input, which is how the form clears after a successful send. The honeypot input uses the same pattern (`data-field="hp"`, without `@blur`).
 
 **Validation rules** (the `rules` object in `components.js`):
 
@@ -363,8 +470,8 @@ The same limits are set as `maxlength` attributes in `index.html`; keep the two 
 
 **When validation runs**
 
-- On **blur** (leaving a field).
-- On **input**, but only if that field is already showing an error. The error clears as soon as it's fixed, without nagging someone who's still typing for the first time.
+- On **blur** (leaving a field), through `onBlur`.
+- On **input**, through `onInput`, but only if that field is already showing an error. The error clears as soon as it's fixed, without nagging someone who's still typing for the first time.
 - On **submit**, for every field. If anything fails, focus jumps to the first invalid field.
 
 `novalidate` on the `<form>` switches off the browser's own popups so these messages are used instead.
@@ -402,26 +509,31 @@ The success/error message sits inside a `role="status"` element so screen reader
 { "name": "…", "email": "…", "phone": "…", "message": "…" }
 ```
 
-### 4.6 Footer year
+### 4.6 `footer` — copyright year
 
 ```html
-<span x-data x-text="new Date().getFullYear()"></span>
+<span x-data="footer" x-text="year"></span>
 ```
 
-A one-off inline expression; no registered component. Uses the visitor's clock.
+| State | Description |
+| --- | --- |
+| `year` | `new Date().getFullYear()`, set once when the component starts. Uses the visitor's clock. |
+
+Before the move to the CSP build this was an inline expression in the HTML. That no longer works; see [The CSP build rule](#the-csp-build-rule).
 
 ---
 
 ## 5. How the hours calculation works
 
-The helper functions at the top of `components.js` are plain JavaScript with no Alpine dependency, so they can be reasoned about (or tested) on their own.
+The helper functions at the top of `components.js` are plain JavaScript with no Alpine dependency, so they can be reasoned about and tested on their own. `tests/hours.test.mjs` does exactly that (see [§10](#10-testing)).
 
 **The core idea:** every time is converted to *minutes since Sunday 00:00*. A whole week becomes one number line from `0` to `WEEK` (10,080). Checking "are we open?" is then just checking whether a number falls inside a range.
 
 | Function | What it does |
 | --- | --- |
-| `toMinutes("07:30")` | → `450` |
-| `minuteOfWeekInZone(timeZone)` | Uses `Intl.DateTimeFormat` to get the current weekday/hour/minute **in the business's time zone**, and returns a minute-of-week. |
+| `toMinutes("07:30")` | → `450`. Accepts only strict 24-hour `"HH:MM"` (`"00:00"`–`"23:59"`); anything else throws *invalid time "…"*. |
+| `validateHours(hours, timeZone)` | Checks the config before it's used: a real IANA time zone, `hours` an object, only `mon`…`sun` keys, each day a list, and every `open`/`close` a valid time. Throws an error naming the location, such as `hours.fri[1].close: invalid time …`. |
+| `minuteOfWeekInZone(timeZone, date?)` | Uses `Intl.DateTimeFormat` to get the weekday/hour/minute **in the business's time zone**, and returns a minute-of-week. `date` defaults to now. |
 | `weeklyRanges(hours)` | Flattens the config into `[{ start, end }]`. If `end <= start`, adds a day to `end` (past-midnight closing). |
 | `getOpenStatus(hours, now)` | Returns `{ isOpen: true, closesAt }` or `{ isOpen: false, opensAt }` (`opensAt` is `null` if there are no hours at all). |
 | `formatTime(minutes)` | `450` → `"7:30 AM"`, `420` → `"7 AM"`. |
@@ -435,7 +547,7 @@ The helper functions at the top of `components.js` are plain JavaScript with no 
 
 Note that `todayIndex` (the highlighted table row) follows the business's time zone, while the footer year follows the visitor's clock.
 
-These edge cases are **not covered by dedicated tests yet**. Those tests are the next planned change. Don't change these functions until they exist.
+**These cases are pinned by tests** in `tests/hours.test.mjs`: past midnight (Friday 18:00–00:30), Saturday into Sunday (22:00–02:00, across the end of the week), several ranges in one day, no hours at all, the opening minute counting as open and the closing minute as closed, the next opening wrapping round to Monday, a 24-hour range, three time zones, and midnight reported as `00:00`. If you change these functions, run `node --test tests/hours.test.mjs` first and after.
 
 ---
 
@@ -446,11 +558,11 @@ Classes and attributes Alpine adds or relies on, all defined in [site/css/styles
 | Hook | Set by | Effect |
 | --- | --- | --- |
 | `[x-cloak]` | Markup (Alpine removes it once ready) | `display: none !important` until initialised. |
-| `.site-nav.is-open` | `mobileNav` | Shows the dropdown on small screens. |
-| `.status-badge.is-open` / `.is-closed` | `$store.hours` | Green or red status dot and label. |
-| `.hours-table tr.is-today` | `$store.hours` | Highlights today's row. |
-| `.layout-menu` / `.layout-gallery` | `showcase` | List vs. photo-grid layout. |
-| `.filter-button[aria-pressed="true"]` | `showcase` | Active category button. |
+| `.site-nav.is-open` | `mobileNav.navClass` | Shows the dropdown on small screens. |
+| `.status-badge.is-open` / `.is-closed` | `$store.hours.badgeClass` | Green or red status dot and label. |
+| `.hours-table tr.is-today` | `hoursTable.rowClass()` | Highlights today's row. |
+| `.layout-menu` / `.layout-gallery` | `showcase.layoutClass` | List vs. photo-grid layout. |
+| `.filter-button[aria-pressed="true"]` | `showcase.isActiveCategory()` | Active category button. |
 | `[aria-invalid="true"]` | `contactForm` | Invalid field styling. |
 | `.honeypot` | Static | Hides the bot trap off-screen. |
 
@@ -470,11 +582,13 @@ These are easy to break by accident when editing, so keep them intact.
 - **Contact form** fields have real `<label>`s, `aria-invalid`, and `aria-describedby` pointing at their error message. Status updates are announced via `role="status"`.
 - **Honeypot** is `aria-hidden` and `tabindex="-1"`, so neither screen-reader nor keyboard users land on it.
 
+**What's tested.** The browser tests walk the page with real key presses (Tab, Enter, Space, arrows, Esc) and check every item above: the tab order, the skip link, the menu button on a narrow screen, the filters, the lightbox focus trap and focus return, the FAQ, and filling in and sending the form. They check behaviour and ARIA attributes. **They don't check what a screen reader actually announces.** After changing any of these, also try the page with a real screen reader (NVDA, VoiceOver or TalkBack).
+
 ---
 
 ## 8. Common tasks
 
-**Change opening hours or time zone**: edit `timeZone` and `hours` in `site/js/site-config.js`. No code changes needed.
+**Change opening hours or time zone**: edit `timeZone` and `hours` in `site/js/site-config.js`. No code changes needed. Then reload the page: if the hours have disappeared and "Please call us" shows, the console names the mistake (see [§3](#what-happens-when-the-config-is-wrong)).
 
 **Add/remove FAQ questions**: edit the `faqs` array.
 
@@ -493,32 +607,61 @@ When **switching providers**, repeat steps 1–4 and remove the old provider's o
 
 **Add a validated form field**
 
-1. Add the key to `emptyFields()` (which sets up and resets `fields`) and to `errors` in `components.js`.
+1. Add the key to `emptyFields()` (which sets up and resets `fields`) and to `errors` in `components.js`. The `invalid` getter picks it up from `errors` automatically.
 2. Add a rule to the `rules` object that returns an error string or `""`. Include a maximum length, checked before any regex.
-3. Copy an existing `.field` block in `index.html` and change the `id`, `for`, `x-model`, `validateField('…')`, `errors.…` and `aria-describedby` references. Set `maxlength` to the same limit as the rule.
+3. Copy an existing `.field` block in `index.html` and change the `id`, `for`, `data-field`, `:value="fields.…"`, `:aria-invalid="invalid.…"`, `x-show`/`x-text="errors.…"` and `aria-describedby` references. Keep `@input="onInput"` and `@blur="onBlur"` as they are: they find the field through `data-field`. Set `maxlength` to the same limit as the rule. **Don't use `x-model` or `validateField('…')` in the HTML**: the CSP build can't run them.
 4. Update the form provider's server-side limits to match, and the list in the README under "Form provider settings".
+5. Run the tests. The form tests count the error messages shown on an empty submit, so they need updating if the new field is required.
 
 **Add a new component**
 
 ```js
 // site/js/components.js, inside the alpine:init listener
 Alpine.data("myThing", () => ({
-  items: site.myThings,   // read data from window.SITE
-  // state and methods…
+  items: listOrEmpty(site.myThings, "myThings"),   // a list from window.SITE, or [] with a console message
+  showAll: false,
+  get visibleItems() {                             // logic goes in getters...
+    return this.showAll ? this.items : this.items.slice(0, 3);
+  },
+  get toggleLabel() {
+    return this.showAll ? "Show fewer" : "Show all";
+  },
+  toggle() {                                       // ...and methods with no arguments
+    this.showAll = !this.showAll;
+  },
 }));
 ```
 
 ```html
-<section x-data="myThing">…</section>
+<section x-data="myThing">
+  <template x-for="thing in visibleItems" :key="thing.name">
+    <p x-text="thing.name"></p>
+  </template>
+  <button type="button" @click="toggle" x-text="toggleLabel"></button>
+</section>
 ```
 
-Put its data in `site-config.js`, and add `x-cloak` to anything that would look broken before Alpine loads. Keep the logic in `components.js` rather than in long inline expressions: the planned move to Alpine's CSP build will only allow simple property and method references in the markup.
+- Follow [the CSP build rule](#the-csp-build-rule): the HTML only names properties, getters and methods. An attribute like `x-show="items.length > 3"` or `@click="showAll = !showAll"` won't work; it logs a console warning and the tests fail.
+- A method used inside an `x-for` reads the row through `this` (here, `this.thing`) instead of taking an argument.
+- Turn optional config values into `""` or `null` (the `text()` helper in `components.js` does this), so the HTML never reads `undefined`.
+- Make the component cope with its own config being missing or wrong, like the others do, so a mistake can't stop the rest of the page.
+- Put its data in `site-config.js`, and add `x-cloak` to anything that would look broken before Alpine loads.
 
 > **Security rule: never use `x-html`.** Render config values and user input with `x-text` (or attribute bindings) only. `x-text` inserts plain text, which is why the page has no cross-site scripting (XSS) path today; a single `x-html` would open one. Also keep `:src`/`:href` bindings pointed at your own paths. If a URL ever comes from somewhere other than the config you control, allow only `https:` and relative paths.
 
-**Add a new file to the site**: put it inside `site/`. Anything outside `site/` is never deployed. Remember that everything inside `site/` is public.
+**Add a new file to the site**: put it inside `site/`. Anything outside `site/` is never deployed. Remember that everything inside `site/` is public. The tests only accept what the site needs, in the template and in every client copy:
 
-**Check a client's site before launch**: from the template repository, run `node tests/browser-test.mjs --client path/to/client-site` (see [§10](#10-testing)). It must pass before the site goes live; this is a line in the README pre-launch checklist. Then add the site to the client register with the template release it was copied from.
+| Where | Allowed |
+| --- | --- |
+| Top level | `index.html`, `404.html`, `_headers`, `_redirects`, and the folders `css/`, `js/`, `images/` |
+| `css/` | `.css` files |
+| `js/` | `site-config.js`, `components.js` and `vendor/` (which holds exactly the verified Alpine files) |
+| `images/` | `.jpg`, `.jpeg`, `.png`, `.webp`, `.avif`, `.gif`, `.svg`. An SVG must not contain `<script` or an `on…=` event attribute. |
+| Anywhere | No dotfiles or dot-folders (`.git/`, `.env`, `.DS_Store`), and no `.md`, `.env`, `.bak`, `.orig`, `.map`, `.zip`, `.log`, `.mjs` or `.ts` files |
+
+So new code goes into `components.js` rather than a new script file. A new page or a new kind of file is a template change: update `folderProblems()` in `tests/site-policy.mjs` in the same change, and say why in the `CHANGELOG.md` entry. There's no `--allow` for files.
+
+**Check a client's site before launch**: from the template repository, run `node tests/browser-test.mjs --client path/to/client-site` (see [§10](#10-testing)). It must pass before the site goes live; this is a line in the README pre-launch checklist. If the client needs something the template doesn't allow, such as a web-font host, pass each exception with `--allow`. Then add the site to the client register with the template release it was copied from and every `--allow` exception, with the reason.
 
 ---
 
@@ -526,10 +669,16 @@ Put its data in `site-config.js`, and add `x-cloak` to anything that would look 
 
 | Symptom | Likely cause |
 | --- | --- |
-| Nothing interactive works; console says a component is not defined | Script order changed. Alpine core must load **after** `components.js`. Or there's a syntax error in `site-config.js`/`components.js`; check the console. |
+| Nothing interactive works; console says a component is not defined | Script order changed. Alpine core must load **after** `components.js`. Or there's a syntax error in `components.js`; check the console. |
+| Console warning: *"Alpine Expression Error: … Alpine is unable to interpret the following expression using the CSP-friendly build"*, and one binding does nothing | An attribute in `index.html` contains JavaScript (an operator, `!`, a call with arguments, `x-model`…). Move the logic into a getter or method in `components.js` and name it. See [The CSP build rule](#the-csp-build-rule). |
+| A bare `x-data` element does nothing | The CSP build needs a component name. Register an empty one (like `hoursBadge`) and use `x-data="name"`. |
+| A console warning appears for a binding that looks correct | The HTML may be reading a value that is `undefined`, often an optional config field. Default it to `""` or `null` in `components.js`. |
 | Lightbox opens but Tab escapes it / `x-trap` warning | Focus plugin missing, or it's loading after Alpine core. |
-| Hours status is wrong by a few hours | Wrong `timeZone`, or a typo in a time (must be `"HH:MM"`, 24-hour). |
-| "Open now" never updates | It refreshes every 60 seconds; check for a console error in `refresh()`. |
+| Hours are hidden, "Please call us for our current opening hours." shows, and the console says *"Opening hours are hidden because of a problem in site-config.js: …"* | The message names the mistake and where it is, e.g. `hours.mon[0].open: invalid time "7am"` or a misspelled `timeZone`. Fix it in `site-config.js`. See [§3](#what-happens-when-the-config-is-wrong). |
+| Console says *"site-config.js didn't load, so the page is using empty settings."* | The file is missing, its path in `index.html` is wrong, or it has a syntax error (the browser reports that just before). The nav and form still work, but the hours, FAQ and menu are empty. |
+| Console says *"faqs in site-config.js must be a list."* (or `showcase.categories`) | That value isn't a `[ … ]` list. That section stays empty until it's fixed. |
+| Hours status is wrong by a few hours | `timeZone` is a valid zone, but the wrong one. |
+| "Open now" never updates | It refreshes every 60 seconds; check for a console error from `refresh()`. |
 | Showcase items duplicate or vanish when switching categories | Two items in the same category share a `name` (used as the loop key). |
 | A photo shows as broken | `image.src` must be relative to `index.html` (`images/…`), not include `site/`. Also check the file really is inside `site/images/`. |
 | Form always shows "Something went wrong" | The endpoint returned a non-2xx status or blocked the request (CORS). The real error is in the console. |
@@ -540,12 +689,23 @@ Put its data in `site-config.js`, and add `x-cloak` to anything that would look 
 | Form "succeeds" locally but nothing arrives | On `file://`/`localhost` with an empty `formEndpoint`, submissions are only logged to the console. |
 | Testing the form from a phone on your network logs nothing and shows an error | A LAN address (e.g. `192.168.1.20`) isn't treated as local, so an empty `formEndpoint` is an error there. Set a test endpoint, or test on `127.0.0.1`. Only bind a server to your LAN address on a network you trust, and only serve `site/`. |
 | All components broke after an Alpine upgrade | Core and Focus plugin versions differ, or a `<script src>` in `index.html` still points at the old filename. See [Upgrading Alpine](#upgrading-alpine). |
-| Test `[vendor] SHA-384 of <file>` fails | A vendor file changed by even one byte. After a clone, line endings may have been converted: check that `.gitattributes` still has `site/js/vendor/** -text`, then re-checkout the files. Otherwise, **treat it as a possible tampered file**: restore it from git or re-download and re-verify it (§2). Only change `VENDOR_SHA384` as part of a deliberate upgrade. |
-| Test `[vendor] js/vendor/ holds only the expected files` fails | An old Alpine file was left behind after an upgrade, or an unexpected file was added. Remove it, or add it to `VENDOR_SHA384` if it's a verified part of an upgrade. |
+| Test `[vendor] js/vendor/ holds exactly the verified Alpine files` fails with *"SHA-384 is …, expected …"* | A vendor file changed by even one byte. After a clone, line endings may have been converted: check that `.gitattributes` still has `site/js/vendor/** -text`, then re-checkout the files. Otherwise, **treat it as a possible tampered file**: restore it from git or re-download and re-verify it (§2). Only change `VENDOR_SHA384` in `tests/site-policy.mjs` as part of a deliberate upgrade. |
+| The same test fails with *"js/vendor/ holds …; expected …"* | An old Alpine file was left behind after an upgrade, or an unexpected file was added. Remove it, or add it to `VENDOR_SHA384` if it's a verified part of an upgrade. A client copy made before the move to the CSP build fails here (it still has `alpine-3.14.1.min.js`); update it from the current template. |
 | Test `Alpine started` fails right after an upgrade | The `Alpine.version` checks in the tests still expect the old version. See step 6 of [Upgrading Alpine](#upgrading-alpine). |
-| A `[csp]` test fails and names a directive | `index.html` and `_headers` disagree on that directive, or one of them has `'unsafe-inline'` or is missing `object-src 'none'`/`base-uri 'none'`. The output shows both values. Make the two copies match. |
+| A `[policy] the two CSP copies match` test fails and names a directive | `index.html` and `_headers` disagree on that directive. The output shows both values. Make the two copies match. |
+| A `[policy] CSP hard limits` test fails | A copy contains `'unsafe-inline'`, `'unsafe-eval'`, `*` or a scheme-wide source such as `https:` or `data:`, or `object-src`/`base-uri`/`frame-ancestors` isn't `'none'`. These can't be allowed; remove them. See [Hard limits](#content-security-policy). |
+| `[policy] CSP matches the template…` fails: *"script-src adds "https://…", which the template doesn't have"* | The client's policy has a source the template doesn't. If it's intended, pass it with `--allow "<directive> <source>"` and record it in the client register. If not, remove it. |
+| The same test fails: *"default-src was removed"* (or another directive) | A whole directive is missing. Removing a source is fine; removing a directive isn't, because the browser then falls back to `default-src`. Put it back. |
+| `[policy] security headers present with the template's values` fails | A header in the `/*` block is missing or has a different value. Use the template's exact value (§2). |
+| `[policy] HSTS…` fails | `Strict-Transport-Security` is missing or shorter than a year, or isn't written exactly as `max-age=<seconds>` or `max-age=<seconds>; includeSubDomains`. In the template itself, it must be exactly `max-age=31536000`. |
+| `[policy] _headers blocks are well-formed…` fails | `_headers` has no `/*` block or more than one, repeats a header in a block, has a line that isn't `Name: value`, or sets a security header in another path's block. If a per-path security header is really intended, pass `--allow "header <path> <Header-Name>"`. |
+| `[policy] every --allow exception is used` fails: *"--allow "…" isn't needed"* | The run was given an exception the site doesn't need (perhaps it was removed from the CSP). Drop it from the command, and from the client register, so the register stays accurate. |
+| `[folder] only site files…` fails | The client folder contains something that shouldn't be published, such as `.git/`, `.env`, a notes or backup file, a script other than `site-config.js`/`components.js`, or an SVG with a script. Remove it. See [Add a new file to the site](#8-common-tasks). |
+| `[eval] blocked by the … policy` fails | `'unsafe-eval'` (or something that allows `eval`) is back in that CSP copy. Remove it. |
+| `[client page] no requests to other hosts on load, except --allow origins` fails | The page loads something from another host (a font, an analytics script, an image). Self-host it, or, if it's intended, add it to both CSP copies and pass its origin with `--allow`. |
 | `--client` run fails its config checks | The client's `formEndpoint` is empty, isn't a public `https://` URL, contains credentials, or its origin is missing from `connect-src` in one of the two CSP copies. |
 | Tests print "Usage: node tests/browser-test.mjs --client …" and exit | `--client` was given without a folder, or not as the **first** argument. |
+| Tests print *"Unexpected argument: …"* or *"--allow only applies with --client"* | Every argument after the client folder must be `--allow "<exception>"`, with the exception in quotes. `--allow` can't be used in template mode. |
 | Console shows a CSP violation for a script, style or image | Something is loading from another domain, is inline, or is a `data:` image. Self-host it, or update the CSP in both `index.html` and `_headers`. |
 | Live home page shows "not found", but the site works at `/site/` | The project root was published instead of `site/`. Set the publish directory to `site` (or upload the contents of `site/`). Check that `/.git/config`, `/README.md` and `/docs/` return 404 afterwards. |
 | The README, `docs/` or `.git/` are visible on the live site | The project root was published. Same fix as above. On Netlify, `_redirects` hides these paths as a backup; on Cloudflare Pages it doesn't. |
@@ -556,50 +716,98 @@ Put its data in `site-config.js`, and add `x-cloak` to anything that would look 
 
 ## 10. Testing
 
-The automated browser test is [tests/browser-test.mjs](../tests/browser-test.mjs). It drives headless Chrome through the Chrome DevTools Protocol, with no npm packages. It has two modes:
+There are two test scripts, both with no npm packages:
 
 ```sh
-node tests/browser-test.mjs                                   # template mode: the full suite, for this repository
+node tests/browser-test.mjs                                   # template mode: the full browser suite, for this repository
 node tests/browser-test.mjs --client path/to/client-site      # client mode: a client's copy of site/
+node --test tests/hours.test.mjs                              # the opening-hours helpers (Node only, no browser)
 ```
 
-- **Requirements:** Node 22+ and Google Chrome. The script uses the default Windows install path unless you set **`CHROME_PATH`** to your Chrome or Chromium executable, for example:
+[tests/browser-test.mjs](../tests/browser-test.mjs) drives headless Chrome through the Chrome DevTools Protocol. Its file-based checks (headers, CSP, folder contents, vendor hashes) live in [tests/site-policy.mjs](../tests/site-policy.mjs), which it imports. [tests/hours.test.mjs](../tests/hours.test.mjs) loads `components.js` into a sandbox and tests the hours helpers directly.
+
+- **Requirements:** Node 22+, and Google Chrome for the browser tests. The script uses the default Windows install path unless you set **`CHROME_PATH`** to your Chrome or Chromium executable, for example:
   ```sh
   CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" node tests/browser-test.mjs
   ```
-- **Arguments:** in template mode, the optional first argument is the project root; it defaults to the folder above `tests/`. In client mode, `--client` must come **first**, followed by the client's site folder (the folder that holds its `index.html`). The test server serves **only that site folder**, like the real host.
-- **The tests never contact a real form provider.** Every form test swaps in a fake endpoint, and every outgoing `https://` request from a test page is either handed to a test stub or blocked. If the tests can't find a client's `formEndpoint` to swap out, they block the page load rather than risk a real submission.
+- **Arguments:** in template mode, the optional first argument is the project root; it defaults to the folder above `tests/`. In client mode, `--client` must come **first**, followed by the client's site folder (the folder that holds its `index.html`), then any number of `--allow "<exception>"` (see below). The test server serves **only that site folder**, like the real host.
+- **The tests never contact anything outside your machine.** Every request from a test page is intercepted. Only the local test servers are reached. An `https://` request goes to a test stub if the test has one (that's how the form tests fake a provider), and everything else is blocked and recorded. If the tests can't find a client's `formEndpoint` to swap out, they block the page load rather than risk a real submission.
 - The tests stay in the template repository and are never copied into `site/`, because `site/` is public. To test a client's site, run the template's script and point it at the client's folder.
+- Details are printed only for a check that **fails**, one problem per line, so a `PASS` line never shows text that reads like a problem.
 
-**What each mode runs**
+### What each mode runs
 
 | Group | Template | Client | Checks |
 | --- | --- | --- | --- |
-| Components | ✓ | — | Hours badge and table, footer year, nav, filters, lightbox (focus trap, arrow keys, Esc), FAQ, validation messages, 50k-character paste, `maxlength`, honeypot, local console fallback. Runs from `file://`, a `localhost` server and a server sending the real `_headers`. Depends on the sample content, so it's skipped for clients. |
+| Components | ✓ | — | Hours badge and table, footer year, nav, filters, lightbox (focus trap, arrow keys, Esc), FAQ, validation messages, 50k-character paste, `maxlength`, honeypot, local console fallback, **no console warnings** (which is how a binding the CSP build can't read is caught). Runs from `file://`, a `localhost` server and a server sending the real `_headers`. |
+| Broken config | ✓ | — | `site-config.js` is broken six ways: a bad time, a misspelled time zone, an unknown day, `faqs` not a list, the file missing, and a syntax error. Each must give exactly one console message naming the problem and no uncaught exceptions. The affected part hides, and the nav, FAQ, menu and **contact form (validates and submits)** keep working. |
+| Keyboard walk | ✓ | — | The accessibility list in [§7](#7-accessibility-built-into-the-components), with real key presses: the full tab order, the honeypot never focused, the skip link, filters, lightbox, FAQ, form errors and focus, sending by keyboard, and the narrow-screen menu. |
+| Weakened copies | ✓ | — | Proves the client checks work. A correctly configured client copy must pass. Then 24 copies, each weakened one way (a wider `script-src`, a removed header, a short HSTS, `'unsafe-eval'` added back, a second `_headers` block, `.git/`, `.env`, a notes file, an unsafe SVG, a changed vendor byte and so on), must **each fail with the specific problem it targets**. Five more checks cover `--allow`. |
 | Test server | ✓ | — | Path traversal returns 404, a malformed URL returns 400, and the server survives. This tests the harness itself. |
 | **Vendor files** | ✓ | ✓ | SHA-384 of each file matches `VENDOR_SHA384`, and `js/vendor/` holds only those files. |
-| **CSP and headers** | ✓ | ✓ | Both CSP copies match (apart from the header-only directives); no `'unsafe-inline'`; `object-src 'none'` and `base-uri 'none'`; no `data:`; COOP and CORP present. **HSTS:** template mode requires exactly `max-age=31536000`. Client mode only requires a `max-age` of at least one year, so a client may add `includeSubDomains` after the checklist confirmation. The test doesn't check that confirmation was done. |
+| **Policy** | ✓ | ✓ | The `_headers` structure, the security headers, HSTS, the CSP [hard limits](#content-security-policy), the comparison with the template's policy, the two CSP copies matching, and every `--allow` being used. See below. |
+| **Folder** | ✓ | ✓ | Only site files: see [Add a new file to the site](#8-common-tasks). |
+| **`eval` blocked** | ✓ | ✓ | A probe script, served by the test server and loaded by the page like its own scripts, tries `new Function()`. It must be **blocked** under the `index.html` policy and under the `_headers` policy. A control run with the policy switched off must report **allowed**, which shows the probe can tell the difference. |
 | **Contact-form security** | ✓ | ✓ | Empty endpoint on a live host → error; `http://` → error; credentials → rejected, nothing sent; endpoint missing from `connect-src` → blocked; working endpoint → trimmed payload, origin-only referrer; stalled endpoint → error after about 15 s; `HTTPS://` and leading space accepted; `https://` with no host rejected. |
 | **Deployment files** | ✓ | ✓ | `_redirects` rules and `404.html` present. Template mode also checks that `/.git/config`, `/docs/`, `/README.md`, `/CHANGELOG.md` and `/tests/…` return 404. |
 | Client config | — | ✓ | `formEndpoint` is set, is a public `https://` URL with no credentials, and its origin is in `connect-src` in **both** CSP copies. |
-| Client page smoke check | — | ✓ | Alpine 3.14.1 starts, with no CSP violations or console errors on load with the client's `_headers` applied. |
+| Client page | — | ✓ | Alpine 3.14.1 starts with the client's `_headers` applied, with no CSP violations, console errors or console warnings on load, and no requests to other hosts except origins passed with `--allow`. |
 
-Every run fails on any console error or CSP violation.
+The components, broken-config, keyboard and weakened-copy groups depend on the sample content, so they're skipped for clients.
 
-**Last recorded results:** **template mode 103 / 103**. **Client mode 38 / 38** on a sample client copy (one category, no photos, Formspree-style endpoint). A deliberately broken copy failed 7 checks, each for the right reason.
+`tests/hours.test.mjs` covers the cases listed in [§5](#5-how-the-hours-calculation-works), plus `toMinutes` rejecting `"7am"`, `"7:30"`, `"24:00"`, `"07:60"` and other bad times, and `validateHours` reporting each kind of mistake with its location.
 
-Client mode checks the **files**. It doesn't replace the pre-launch checklist's live-URL checks: header scan, 404s, and a real test submission.
+### What client mode guarantees
 
-> **Known limitation of client mode:** it checks that the client's two CSP copies match each other and contain the key protections, but it doesn't yet compare them against the template's policy. A weakening made in *both* copies (a wider `script-src`, a relaxed `frame-ancestors`, a removed header) can still pass. Until that check is added, compare the client's `_headers` and CSP with the template's by hand before launch. Client mode also doesn't yet check the client folder for files that shouldn't be published (`.git/`, `.env`, notes), so check that by hand too.
+A passing client run means the client's copy of `site/` has **the template's security policy, apart from the exceptions you passed and can see on the command line**:
 
-**Not covered by automated tests:**
+- **The policy matches the template's.** Both CSP copies are compared, directive by directive, with the template's own `site/` folder, so the baseline can never drift from the template. The only difference accepted without `--allow` is the form endpoint's origin in `connect-src`. Removing a source is fine (it's stricter); removing a whole directive isn't.
+- **The hard limits hold** in both copies, whatever `--allow` says: no `'unsafe-inline'`, no `'unsafe-eval'`, no `*` or scheme-wide sources, and `object-src`, `base-uri` and `frame-ancestors` stay `'none'`.
+- **The security headers** are in a single `/*` block, each set once, with the template's exact values. HSTS is at least a year and may add `includeSubDomains`. The test can't tell whether the subdomain check in the pre-launch checklist was actually done.
+- **The folder holds only the site**, with no dotfiles, notes, backups, source maps, extra scripts or unsafe SVGs.
+- **The Alpine files are the verified ones**, byte for byte, and **`eval` is blocked** by both policy copies.
+- **The form setup is right**, and **the page loads cleanly** with no outside requests except `--allow` origins.
+
+It checks the **files**. It doesn't replace the pre-launch checklist's live-URL checks: a header scan, the 404s, and a real test submission. A client copy made from an older template release can fail when the template's checks get stricter. That's deliberate: an outdated site can't pass the checklist unnoticed.
+
+### Exceptions with `--allow`
+
+If a client genuinely needs something the template doesn't allow, pass each exception explicitly:
+
+```sh
+node tests/browser-test.mjs --client path/to/client-site --allow "font-src https://fonts.gstatic.com"
+node tests/browser-test.mjs --client path/to/client-site --allow "style-src https://fonts.googleapis.com" --allow "font-src https://fonts.gstatic.com"
+node tests/browser-test.mjs --client path/to/client-site --allow "header /images/* Cross-Origin-Resource-Policy"
+```
+
+| Form | Allows |
+| --- | --- |
+| `"<directive> <source> [<source> …]"` | Those sources in that CSP directive, in both copies. The directive may be one the template doesn't have. |
+| `"header <path> <Header-Name>"` | That security header set in the `_headers` block for that path. |
+
+- **An exception that isn't needed fails the run**, so the list on the command line always matches what the site really does.
+- **`--allow` can't override the hard limits**, change a header's value in the `/*` block, or allow files in the folder.
+- A run that used exceptions prints them at the end. **Record each one, with the reason, in the client register.** In client mode, every `--allow` origin is the place to look first in a review: it's the one way to widen a client's policy.
+- The tests still block requests to `--allow` origins (they never contact them), and list them as expected.
+
+### Last recorded results
+
+On 2026-09-30, against the current template:
+
+| Run | Result |
+| --- | --- |
+| `node tests/browser-test.mjs` (template mode) | **200 / 200** |
+| `node --test tests/hours.test.mjs` | **16 / 16** |
+| `node tests/browser-test.mjs --client …` on a fresh copy of `site/` with a Formspree-style endpoint added to `formEndpoint` and to `connect-src` in both copies | **38 / 38** |
+
+### Not covered by automated tests
 
 - **Browser autofill and password managers** leaving the honeypot empty (**required before launch**). Check by hand in Chrome, Edge, Safari, Firefox and 1Password or Bitwarden. After autofilling, run `document.getElementById('hp_field').value` in the console; it must be `""`.
-- **Headers and 404s on the real host** (**required before launch**). Deploy to staging and check the live URL with a header scanner (e.g. securityheaders.com).
-- **The hours helpers in isolation.** They're only tested through the page at the current time. Past-midnight and end-of-week cases aren't pinned by tests yet.
+- **Headers and 404s on the real host** (**required before launch**). Deploy and check the live URL with a header scanner (e.g. securityheaders.com).
+- **What a screen reader announces.** The keyboard walk checks behaviour and ARIA attributes only (see [§7](#7-accessibility-built-into-the-components)).
 - **`404.html`'s own CSP.** It isn't compared with the other two copies. It's meant to be stricter.
 
-After any change to `site/js/components.js`, `site/index.html`, the CSP or `site/js/vendor/`, run the script and do a quick manual pass of every component with the console open.
+After any change to `site/js/components.js`, `site/index.html`, `site/js/site-config.js`, the CSP or `site/js/vendor/`, run the tests and do a quick manual pass of every component with the console open.
 
 ---
 
@@ -609,14 +817,8 @@ Before release **1.0.0** is tagged:
 
 - choose the default hosting platform (Netlify or Cloudflare Pages) and add its config file (`netlify.toml` or `wrangler.toml`) pinning the publish directory to `site`
 - choose the default form provider (JSON POST, spam kept in a spam folder, domain restriction, plain-text notifications, no secret key in the browser)
-- a manual autofill test of the honeypot, and a staging deploy that passes a header scan
-- client mode compares a client's policy and headers against the template's, and checks the client folder for files that shouldn't be published
+- send the honeypot value to the form provider as spam, instead of discarding the message in the browser. This changes [§4.5](#45-contactform--validated-contact-form): the honeypot step and the payload.
+- deploy the sample site as a live demo and staging site, and check it: a header scan, the 404s, and a real test submission
+- a manual autofill test of the honeypot (see [§10](#not-covered-by-automated-tests))
 
-After 1.0.0, each item ships as its own release with a changelog entry:
-
-| Order | Change | What will change in this document |
-| --- | --- | --- |
-| 1 | Automated tests for the hours helpers | [Section 5](#5-how-the-hours-calculation-works) (remove the "not tested yet" warning) and [section 10](#10-testing). |
-| 2 | Validate `site-config.js` at startup | [Section 3](#3-configuration-windowsite) and [section 9](#9-troubleshooting). One broken component must no longer take down the others; in particular, the contact form must keep working when the hours config is broken. |
-| 3 | Switch to Alpine's CSP build and remove `'unsafe-eval'` | [Section 2](#2-how-the-scripts-load), and every place where the markup uses an inline expression, such as [4.6 Footer year](#46-footer-year), the FAQ `id` strings in [4.4](#44-faq--accordion) and the lightbox counter in [4.3](#43-showcase--menu--gallery-and-lightbox). These will move into `components.js`. |
-| 4 | Send the honeypot value to the form provider as spam | [Section 4.5](#45-contactform--validated-contact-form): the honeypot step and the payload. |
+Each later change ships as its own release with a `CHANGELOG.md` entry, and this document is updated in the same release.
