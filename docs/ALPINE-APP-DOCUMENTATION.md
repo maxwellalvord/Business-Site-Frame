@@ -792,13 +792,13 @@ node tests/browser-test.mjs --client path/to/client-site --allow "header /images
 
 ### Last recorded results
 
-On 2026-09-30, against the current template:
+Recorded on 2026-09-30 for the current template:
 
 | Run | Result |
 | --- | --- |
 | `node tests/browser-test.mjs` (template mode) | **200 / 200** |
 | `node --test tests/hours.test.mjs` | **16 / 16** |
-| `node tests/browser-test.mjs --client …` on a fresh copy of `site/` with a Formspree-style endpoint added to `formEndpoint` and to `connect-src` in both copies | **38 / 38** |
+| `node tests/browser-test.mjs --client …` on a fresh, correctly configured client copy of `site/` | **38 / 38** |
 
 ### Not covered by automated tests
 
