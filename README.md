@@ -43,9 +43,10 @@ For how the components work and how to change them safely (the Content-Security-
 
 1. **`js/site-config.js`**: time zone, weekly hours, FAQ entries, menu / gallery items (and whether they show as a menu list or a photo grid), and the form endpoint.
 2. **`index.html`**: business name, headline, address, phone, and email.
-3. **`css/styles.css`**: brand colors and fonts are the variables at the top under `:root`.
-4. **`images/`**: replace the placeholder images and update the paths in the config. **Use JPG, PNG or WebP for photos. Don't accept SVG files from clients without sanitizing them first**, because an SVG can contain scripts. Give every image `alt` text.
-5. **Before launch**: work through [Deploying](#deploying) and the [pre-launch checklist](#pre-launch-checklist).
+3. **Changing the page's behaviour:** the site uses Alpine's CSP build, so the HTML can't contain JavaScript expressions. Every `x-`, `:` and `@` attribute names a property or method from `js/components.js`, such as `x-text="item.name"` or `@click="close"`. Put any logic (comparisons, `!`, string building) in a getter or method there. The comment at the top of `components.js` explains how.
+4. **`css/styles.css`**: brand colors and fonts are the variables at the top under `:root`.
+5. **`images/`**: replace the placeholder images and update the paths in the config. **Use JPG, PNG or WebP for photos. Don't accept SVG files from clients without sanitizing them first**, because an SVG can contain scripts. Give every image `alt` text.
+6. **Before launch**: work through [Deploying](#deploying) and the [pre-launch checklist](#pre-launch-checklist).
 
 ### Contact form
 
@@ -111,7 +112,7 @@ site/                    THE WEBSITE: the only folder that is deployed or copied
   css/styles.css         All styles, mobile-first
   js/site-config.js      Per-business data (window.SITE)
   js/components.js       Alpine components + hours calculation
-  js/vendor/             Self-hosted Alpine core and Focus plugin (same version)
+  js/vendor/             Self-hosted Alpine (its CSP build) and Focus plugin, same version
   images/                Placeholder photos
 docs/                    Developer documentation for the Alpine components (not deployed)
 tests/browser-test.mjs   Automated browser tests (not deployed)

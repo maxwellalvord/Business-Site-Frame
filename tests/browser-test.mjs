@@ -68,6 +68,13 @@ function resolveSitePath(urlPath) {
 function startServer(port, applyHeaders) {
   const hdrs = applyHeaders ? siteWideHeaders(SITE) : {};
   const srv = http.createServer((req, res) => {
+    // A test-only script, loaded by the page like its own scripts so it runs
+    // under the page's real Content-Security-Policy. It records whether eval
+    // works. Not part of the site; only this test server serves it.
+    if (req.url === "/__eval-probe.js") {
+      res.writeHead(200, { "Content-Type": "text/javascript", ...hdrs });
+      return res.end('try { new Function("return 1")(); window.__evalProbe = "allowed"; } catch (e) { window.__evalProbe = "blocked"; }');
+    }
     const { status, file } = resolveSitePath(req.url);
     if (status !== 200) { res.writeHead(status); return res.end(); }
     res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream", ...hdrs });
@@ -198,9 +205,9 @@ async function newPage({ bypassCSP = false, configOverride = null, configPatch =
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
     return r.result.value;
   };
-  const key = async (k, code, vk) => {
-    await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: vk });
-    await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk });
+  const key = async (k, code, vk, { text, modifiers = 0 } = {}) => {
+    await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: vk, text, modifiers });
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk, modifiers });
   };
   const goto = async (url) => {
     await c.send("Page.navigate", { url });
@@ -271,6 +278,8 @@ async function componentSuite(label, url) {
   if (has404) console.log("      note: a 404 was logged (the harness server has no favicon.ico)");
   check(`[${label}] no console errors`, errs.length === 0, errs.map((x) => x.text).join(" | "));
   check(`[${label}] no requests to other hosts`, p.blocked.length === 0, p.blocked.join(", "));
+  const warnings = p.logs.filter((l) => l.type === "warning");
+  check(`[${label}] no console warnings (the CSP build warns about expressions it can't run)`, warnings.length === 0, warnings.map((x) => x.text).join(" | "));
   p.c.close();
 }
 
@@ -310,6 +319,8 @@ async function clientSmoke() {
   const allowedOrigins = ALLOWS.flatMap((a) => a.trim().split(/\s+/).slice(1)).filter((t) => /^https:\/\/[^/]+$/.test(t));
   const expected = p.blocked.filter((u) => allowedOrigins.some((o) => u.startsWith(o + "/")));
   const unexpected = p.blocked.filter((u) => !expected.includes(u));
+  const warnings = p.logs.filter((l) => l.type === "warning");
+  check("[client page] no console warnings on load", warnings.length === 0, warnings.map((x) => x.text).join(" | "));
   check("[client page] no requests to other hosts on load, except --allow origins", unexpected.length === 0, `the page tried to load: ${unexpected.join(", ")}`);
   if (expected.length) console.log(`      (requests to --allow origins, blocked by the test as expected: ${expected.join(", ")})`);
   p.c.close();
@@ -403,6 +414,130 @@ async function formSecuritySuite() {
     p.c.close();
   }
 
+}
+
+// The page's policy must block eval (the site runs on Alpine's CSP build).
+// Code run through the debugging protocol isn't subject to the page's CSP, so
+// the probe is a script the page loads itself. The control run, with CSP
+// bypassed, must report "allowed", which shows the probe can tell the difference.
+async function evalBlockedSuite() {
+  const probe = async (url, options) => {
+    const p = await newPage(options);
+    await p.goto(url);
+    await p.evalJS(`(() => { const s = document.createElement('script'); s.src = '/__eval-probe.js'; document.head.append(s); })()`);
+    await sleep(300);
+    const result = await p.evalJS("window.__evalProbe || 'did not run'");
+    p.c.close();
+    return result;
+  };
+  check("[eval] blocked by the index.html policy", (await probe("http://localhost:8765/")) === "blocked");
+  check("[eval] blocked by the _headers policy", (await probe("http://localhost:8766/")) === "blocked");
+  check("[eval] control: the probe detects eval when there's no policy", (await probe("http://localhost:8765/", { bypassCSP: true })) === "allowed");
+}
+
+// Template mode only: walk the page with the keyboard (Tab, Enter, Space,
+// arrows, Esc) and check the accessibility behaviour listed in the docs.
+async function keyboardSuite() {
+  const TAB = ["Tab", "Tab", 9];
+  const ENTER = ["Enter", "Enter", 13, { text: "\r" }];
+  const SPACE = [" ", "Space", 32, { text: " " }];
+  const ESC = ["Escape", "Escape", 27];
+  const describe = `(() => { const a = document.activeElement; if (!a || a === document.body) return 'body';
+    return a.id ? '#' + a.id : '.' + [...a.classList].join('.') + (a.textContent.trim() ? ' ' + a.textContent.trim().slice(0, 20) : ''); })()`;
+  const tabTo = async (p, selector, max = 80) => {
+    for (let n = 0; n < max; n++) {
+      if (await p.evalJS(`document.activeElement?.matches(${JSON.stringify(selector)}) ?? false`)) return true;
+      await p.key(...TAB);
+    }
+    return false;
+  };
+
+  // Wide screen: the whole tab order.
+  {
+    const p = await newPage();
+    await p.c.send("Emulation.setDeviceMetricsOverride", { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    await p.goto("http://localhost:8766/");
+    const order = [];
+    for (let n = 0; n < 40; n++) { await p.key(...TAB); order.push(await p.evalJS(describe)); }
+    check("[keyboard] first Tab reaches the skip link", order[0].startsWith(".skip-link"), order[0]);
+    const want = [".skip-link", ".brand", "Menu", "Hours", "FAQ", "Contact", ".button Get in touch", "See hours", ".filter-button", ".showcase-thumb", "#faq-q-0", "#name", "#email", "#phone", "#message", ".button Send message"];
+    let pos = 0;
+    for (const d of order) if (pos < want.length && d.includes(want[pos])) pos++;
+    check("[keyboard] tab order: skip link, nav, hero, filters, photos, FAQ, form fields, send", pos === want.length, `stopped before "${want[pos]}"; order was: ${order.join(" → ")}`);
+    check("[keyboard] the honeypot is never focused", !order.includes("#hp_field"));
+
+    // Skip link moves to the main content.
+    await p.goto("http://localhost:8766/");
+    await p.key(...TAB); await p.key(...ENTER); await sleep(100); await p.key(...TAB);
+    const afterSkip = await p.evalJS(describe);
+    check("[keyboard] skip link jumps past the header", afterSkip.includes("Get in touch"), afterSkip);
+
+    // Filters: aria-pressed follows the active category.
+    await tabTo(p, ".filter-button:nth-of-type(2)");
+    await p.key(...ENTER); await sleep(150);
+    check("[keyboard] Enter on a filter selects it (aria-pressed)", await p.evalJS(`[...document.querySelectorAll('.filter-button')].map(b => b.getAttribute('aria-pressed')).join() === 'false,true,false'`),
+      await p.evalJS(`[...document.querySelectorAll('.filter-button')].map(b => b.getAttribute('aria-pressed')).join()`));
+    check("[keyboard] filters are a labelled group", await p.evalJS(`(() => { const g = document.querySelector('.showcase-filters'); return g.getAttribute('role') === 'group' && !!g.getAttribute('aria-label'); })()`));
+
+    // Lightbox: opens on Enter, traps focus, arrows, Esc, focus returns.
+    check("[keyboard] photo buttons have hidden 'Enlarge photo' text", await p.evalJS(`document.querySelector('.showcase-thumb .sr-only').textContent.startsWith('Enlarge photo: ')`));
+    await tabTo(p, ".showcase-thumb");
+    await p.key(...ENTER); await sleep(500);
+    check("[keyboard] Enter on a photo opens the lightbox dialog", await p.evalJS(`(() => { const d = document.querySelector('.lightbox'); return getComputedStyle(d).display !== 'none' && d.getAttribute('role') === 'dialog' && d.getAttribute('aria-modal') === 'true'; })()`));
+    let trapped = true;
+    for (let n = 0; n < 6; n++) { await p.key(...TAB); trapped &&= await p.evalJS(`document.querySelector('.lightbox').contains(document.activeElement)`); }
+    check("[keyboard] Tab stays inside the open lightbox", trapped);
+    const cap = await p.evalJS(`document.querySelector('.lightbox figcaption span').textContent`);
+    await p.key("ArrowRight", "ArrowRight", 39); await sleep(100);
+    check("[keyboard] arrow keys move between photos", (await p.evalJS(`document.querySelector('.lightbox figcaption span').textContent`)) !== cap);
+    await p.key(...ESC); await sleep(600);
+    check("[keyboard] Esc closes the lightbox and focus returns to the photo",
+      await p.evalJS(`getComputedStyle(document.querySelector('.lightbox')).display === 'none' && document.activeElement.matches('.showcase-thumb')`), await p.evalJS(describe));
+
+    // FAQ: Enter opens, Space closes; ids and labels line up.
+    await tabTo(p, ".faq-question");
+    await p.key(...ENTER); await sleep(400);
+    check("[keyboard] Enter opens an FAQ answer (aria-expanded, labelled region)", await p.evalJS(`(() => {
+      const q = document.activeElement, a = document.getElementById(q.getAttribute('aria-controls'));
+      return q.closest('h3') !== null && q.getAttribute('aria-expanded') === 'true' && !!a && a.getAttribute('role') === 'region'
+        && a.getAttribute('aria-labelledby') === q.id && getComputedStyle(a).display !== 'none'; })()`));
+    await p.key(...SPACE); await sleep(400);
+    check("[keyboard] Space closes it again", await p.evalJS(`document.activeElement.getAttribute('aria-expanded') === 'false'`));
+
+    // Form: leaving an empty field shows its error; submit moves focus to the first invalid field.
+    await tabTo(p, "#name"); await p.key(...TAB); await sleep(150);
+    check("[keyboard] leaving an empty field shows its error (aria-invalid, aria-describedby)", await p.evalJS(`(() => {
+      const f = document.getElementById('name'), err = document.getElementById(f.getAttribute('aria-describedby'));
+      return f.getAttribute('aria-invalid') === 'true' && getComputedStyle(err).display !== 'none' && document.querySelector('label[for=name]') !== null; })()`));
+    await tabTo(p, ".contact-form button[type=submit]");
+    await p.key(...ENTER); await sleep(300);
+    check("[keyboard] submitting with errors moves focus to the first invalid field", (await p.evalJS(describe)) === "#name", await p.evalJS(describe));
+    await p.c.send("Input.insertText", { text: "Ada Lovelace" });
+    await p.key(...TAB); await p.c.send("Input.insertText", { text: "ada@example.com" });
+    await p.key(...TAB); await p.key(...TAB); await p.c.send("Input.insertText", { text: "Hello, a table for ten please." });
+    await tabTo(p, ".contact-form button[type=submit]");
+    await p.key(...ENTER); await sleep(400);
+    check("[keyboard] the form can be filled and sent by keyboard; status is announced (role=status)",
+      await p.evalJS(`(() => { const s = document.querySelector('.form-status'); return s.getAttribute('role') === 'status' && getComputedStyle(s.querySelector('.is-success')).display !== 'none'; })()`));
+    p.c.close();
+  }
+
+  // Narrow screen: the menu button.
+  {
+    const p = await newPage();
+    await p.c.send("Emulation.setDeviceMetricsOverride", { width: 400, height: 800, deviceScaleFactor: 1, mobile: true });
+    await p.goto("http://localhost:8766/");
+    const ok = await tabTo(p, ".nav-toggle", 10);
+    check("[keyboard] narrow screen: the menu button is reachable and labelled", ok && await p.evalJS(`(() => { const b = document.activeElement;
+      return b.getAttribute('aria-controls') === 'site-nav' && b.getAttribute('aria-expanded') === 'false' && b.querySelector('.sr-only').textContent === 'Menu'; })()`));
+    await p.key(...ENTER); await sleep(150);
+    check("[keyboard] Enter opens the menu (aria-expanded)", await p.evalJS(`document.querySelector('.nav-toggle').getAttribute('aria-expanded') === 'true' && document.getElementById('site-nav').classList.contains('is-open')`));
+    await p.key(...TAB);
+    check("[keyboard] Tab moves into the open menu", (await p.evalJS(describe)).includes("Menu"), await p.evalJS(describe));
+    await p.key(...ESC); await sleep(150);
+    check("[keyboard] Esc closes the menu", await p.evalJS(`document.querySelector('.nav-toggle').getAttribute('aria-expanded') === 'false'`));
+    p.c.close();
+  }
 }
 
 // Template mode only: a mistake in site-config.js must only affect the part of
@@ -510,6 +645,7 @@ function weakenedCopySuite() {
       ["HSTS shortened to 5 minutes", (d) => edit(d, "_headers", (s) => s.replace(/Strict-Transport-Security: .*/, "Strict-Transport-Security: max-age=300")), 'Strict-Transport-Security is "max-age=300"'],
       ["extra connect-src origin (both copies)", (d) => bothCsps(d, (c) => c.replace("connect-src 'self'", "connect-src 'self' https://evil.example")), 'connect-src adds "https://evil.example"'],
       ["default-src removed (both copies)", (d) => bothCsps(d, (c) => c.replace("default-src 'self'; ", "")), "default-src was removed"],
+      ["'unsafe-eval' added back (both copies)", (d) => bothCsps(d, (c) => c.replace("script-src 'self'", "script-src 'self' 'unsafe-eval'")), "contains 'unsafe-eval'"],
       ["'unsafe-inline' styles (both copies)", (d) => bothCsps(d, (c) => c.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'")), "style-src contains 'unsafe-inline'"],
       ["CSP changed in _headers only", (d) => edit(d, "_headers", (s) => s.replace("img-src 'self'", "img-src 'self' https://img.example")), "img-src: index.html"],
       ["second _headers block loosens the CSP for one page", (d) => edit(d, "_headers", (s) => s + "\n/index.html\n  Content-Security-Policy: default-src *\n"), '"/index.html" overrides Content-Security-Policy'],
@@ -566,6 +702,7 @@ try {
     await componentSuite("localhost server", "http://localhost:8765/");
     await componentSuite("_headers applied", "http://localhost:8766/");
     await brokenConfigSuite();
+    await keyboardSuite();
   } else {
     // Client-only: the client's own endpoint and page.
     clientConfigChecks();
@@ -582,6 +719,7 @@ try {
   if (CLIENT_MODE && policy.usedAllows.length) {
     console.log(`\n      Exceptions allowed with --allow (record each one, with the reason, in the client register):\n        ${policy.usedAllows.join("\n        ")}\n`);
   }
+  await evalBlockedSuite();
   await formSecuritySuite();
   if (!CLIENT_MODE) weakenedCopySuite();
   {

@@ -26,6 +26,7 @@ The first launch-ready template. It will be tagged `v1.0.0` once the host and fo
 
 ### Scripts and headers
 - 🔒 **Security:** Alpine 3.14.1 and the Focus plugin are self-hosted in `site/js/vendor/`. No script loads from a third-party domain.
+- 🔒 **Security:** The site uses Alpine's CSP build (`alpine-csp-3.14.1.min.js`, verified from two sources), so the Content-Security-Policy no longer needs `'unsafe-eval'`. Nothing on the page can turn text into code. The HTML's Alpine attributes now name properties and methods in `components.js` instead of containing JavaScript expressions.
 - 🔒 **Security:** Content-Security-Policy in `index.html` and `_headers`: scripts, styles and images only from the site itself, and no `data:` images.
 - 🔒 **Security:** `_headers` for Netlify / Cloudflare Pages: `frame-ancestors`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`, and HSTS for one year. HSTS leaves out `includeSubDomains` by default; it should be added only after checking every subdomain.
 
@@ -45,3 +46,5 @@ The first launch-ready template. It will be tagged `v1.0.0` once the host and fo
 - The template tests build weakened copies of the site and require the client checks to catch each one.
 - Tests for the opening-hours calculations (`tests/hours.test.mjs`): past midnight, Saturday into Sunday, several ranges per day, no hours at all, time zones, and config validation.
 - The browser tests break `site-config.js` in six ways and check the rest of the page, and the contact form, keep working.
+- 🔒 **Security:** The tests check that the page's policy really blocks `eval`, and that `'unsafe-eval'` can't be added back, even with `--allow`.
+- A keyboard walk test: the tab order, the skip link, the menu button, the filters, the lightbox (focus trap, arrows, Esc, focus return), the FAQ and the contact form, all by keyboard.

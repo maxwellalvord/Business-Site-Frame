@@ -1,6 +1,14 @@
 // Alpine components for the site. This file must load before Alpine itself so
 // the `alpine:init` listener is registered in time (see the script order in
 // index.html).
+//
+// The site uses Alpine's CSP build, which can't evaluate JavaScript written in
+// the HTML. Every x-/:/@ attribute names a property, getter or method defined
+// here, so all logic lives in this file. Methods used from the HTML are called
+// with the element's whole scope as `this`, so inside an x-for they can read
+// the loop variables (`this.item`, `this.i`). Values read from the HTML must
+// never be `undefined` (the CSP build warns about it), so optional config
+// fields are normalised to "" or null.
 
 // ---------------------------------------------------------------------------
 // Hours helpers (plain functions, no Alpine) — all times are "minutes since
@@ -118,11 +126,15 @@ document.addEventListener("alpine:init", () => {
     if (value !== undefined) console.error(`${name} in site-config.js must be a list.`);
     return [];
   };
+  const text = (value) => (value === undefined || value === null ? "" : String(value));
 
   // Mobile nav: just an open/closed flag. CSS decides whether the menu is a
   // dropdown (small screens) or always visible (wide screens).
   Alpine.data("mobileNav", () => ({
     open: false,
+    get navClass() {
+      return { "is-open": this.open };
+    },
     toggle() {
       this.open = !this.open;
     },
@@ -143,6 +155,12 @@ document.addEventListener("alpine:init", () => {
     days: [],
     get unavailable() {
       return !this.available;
+    },
+    get badgeClass() {
+      return this.status.isOpen ? "is-open" : "is-closed";
+    },
+    get detailText() {
+      return this.status.detail ? `· ${this.status.detail}` : "";
     },
 
     // Alpine calls a store's init() automatically.
@@ -190,9 +208,21 @@ document.addEventListener("alpine:init", () => {
     },
   });
 
-  // FAQ accordion: only one answer open at a time, tracked by index.
+  // The hero "Open now" badge reads everything from $store.hours; it only
+  // needs a named component because the CSP build can't use a bare x-data.
+  Alpine.data("hoursBadge", () => ({}));
+
+  // Hours table: highlights today's row. `this.day` is the x-for row.
+  Alpine.data("hoursTable", () => ({
+    rowClass() {
+      return { "is-today": this.day.index === Alpine.store("hours").todayIndex };
+    },
+  }));
+
+  // FAQ accordion: only one answer open at a time, tracked by index. The
+  // *This* methods are used inside the x-for, where `this.i` is the row.
   Alpine.data("faq", () => ({
-    items: listOrEmpty(site.faqs, "faqs"),
+    items: listOrEmpty(site.faqs, "faqs").map((item) => ({ q: text(item?.q), a: text(item?.a) })),
     openIndex: null,
     toggle(i) {
       this.openIndex = this.openIndex === i ? null : i;
@@ -200,14 +230,36 @@ document.addEventListener("alpine:init", () => {
     isOpen(i) {
       return this.openIndex === i;
     },
+    toggleThis() {
+      this.toggle(this.i);
+    },
+    isThisOpen() {
+      return this.isOpen(this.i);
+    },
+    questionId() {
+      return `faq-q-${this.i}`;
+    },
+    answerId() {
+      return `faq-a-${this.i}`;
+    },
   }));
 
   // Menu / gallery showcase: category filter buttons, a list or grid of items,
   // and a lightbox for any item that has an image. `index` is kept when
   // closing so the image doesn't blank out during the fade-out transition.
+  // Items are normalised so every field the HTML reads exists ("" or null).
+  const showcaseItem = (item) => ({
+    name: text(item?.name),
+    description: text(item?.description),
+    price: text(item?.price),
+    image: item?.image?.src ? { src: text(item.image.src), alt: text(item.image.alt) } : null,
+  });
+
   Alpine.data("showcase", () => ({
     layout: site.showcase?.layout === "gallery" ? "gallery" : "menu",
-    categories: listOrEmpty(site.showcase?.categories, "showcase.categories").filter((c) => Array.isArray(c?.items)),
+    categories: listOrEmpty(site.showcase?.categories, "showcase.categories")
+      .filter((c) => Array.isArray(c?.items))
+      .map((c) => ({ name: text(c.name), items: c.items.map(showcaseItem) })),
     activeCategory: 0,
     isOpen: false,
     index: 0,
@@ -219,11 +271,44 @@ document.addEventListener("alpine:init", () => {
       return this.items.filter((item) => item.image);
     },
     get current() {
-      return this.images[this.index];
+      return this.images[this.index] || null;
     },
     // "Oat milk latte · $5.50", or just the name when there's no price.
     get caption() {
       return this.current ? [this.current.name, this.current.price].filter(Boolean).join(" · ") : "";
+    },
+    get layoutClass() {
+      return `layout-${this.layout}`;
+    },
+    get hasFilters() {
+      return this.categories.length > 1;
+    },
+    get hasSeveralImages() {
+      return this.images.length > 1;
+    },
+    // null leaves the lightbox <img> without a src when there's no photo.
+    get currentSrc() {
+      return this.current ? this.current.image.src : null;
+    },
+    get currentAlt() {
+      return this.current ? this.current.image.alt : "";
+    },
+    get counter() {
+      return `${this.index + 1} / ${this.images.length}`;
+    },
+    // Used inside the x-for loops: `this.i` is the filter button's index,
+    // `this.item` is the showcase item.
+    isActiveCategory() {
+      return this.activeCategory === this.i;
+    },
+    selectThisCategory() {
+      this.selectCategory(this.i);
+    },
+    openThisItem() {
+      this.open(this.item);
+    },
+    enlargeLabel() {
+      return `Enlarge photo: ${this.item.name}`;
     },
     selectCategory(i) {
       this.activeCategory = i;
@@ -307,6 +392,34 @@ document.addEventListener("alpine:init", () => {
     errors: { name: "", email: "", phone: "", message: "" },
     status: "idle", // idle | sending | success | error
 
+    get invalid() {
+      return Object.fromEntries(Object.entries(this.errors).map(([name, message]) => [name, !!message]));
+    },
+    get isSending() {
+      return this.status === "sending";
+    },
+    get isSuccess() {
+      return this.status === "success";
+    },
+    get isError() {
+      return this.status === "error";
+    },
+    get buttonLabel() {
+      return this.isSending ? "Sending…" : "Send message";
+    },
+
+    // Each input names its field in data-field. Typing updates the field and,
+    // if it's already showing an error, re-checks it so the error clears as
+    // soon as it's fixed. Leaving a field checks it.
+    onInput(event) {
+      const name = event.target.dataset.field;
+      this.fields[name] = event.target.value;
+      if (this.errors[name]) this.validateField(name);
+    },
+    onBlur(event) {
+      this.validateField(event.target.dataset.field);
+    },
+
     validateField(name) {
       this.errors[name] = rules[name](this.fields[name]);
       return !this.errors[name];
@@ -364,5 +477,10 @@ document.addEventListener("alpine:init", () => {
         this.status = "error";
       }
     },
+  }));
+
+  // Footer copyright year (the visitor's clock).
+  Alpine.data("footer", () => ({
+    year: new Date().getFullYear(),
   }));
 });

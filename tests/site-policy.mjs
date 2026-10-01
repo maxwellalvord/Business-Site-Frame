@@ -11,7 +11,7 @@ import crypto from "node:crypto";
 // Expected SHA-384 of every file in js/vendor/. When upgrading Alpine, update
 // this table (see "Upgrading Alpine" in the docs).
 export const VENDOR_SHA384 = {
-  "alpine-3.14.1.min.js": "l8f0VcPi/M1iHPv8egOnY/15TDwqgbOR1anMIJWvU6nLRgZVLTLSaNqi/TOoT5Fh",
+  "alpine-csp-3.14.1.min.js": "rCnzN/DdCU4dORuP99iqMm3OJPQKDUtMAjgeZ9nfqF9Fz4P/n4BGlOrtfsaiDNAL",
   "alpine-focus-3.14.1.min.js": "bKXNU7o2Y3Uk/F2PB6U0bMyGZf6pLDnePM70U7sTE3cXUQ+JLgzrr/kwipEh0p23",
 };
 
@@ -104,7 +104,7 @@ export function parseAllows(list) {
 
 // Sources that are never acceptable, whatever --allow says, and directives
 // whose value is fixed. Both are reported by hardFloorProblems().
-const isForbiddenSource = (t) => t === "'unsafe-inline'" || t === "*" || /^[a-z][a-z0-9+.-]*:$/i.test(t);
+const isForbiddenSource = (t) => t === "'unsafe-inline'" || t === "'unsafe-eval'" || t === "*" || /^[a-z][a-z0-9+.-]*:$/i.test(t);
 const FIXED_DIRECTIVES = ["object-src", "base-uri", "frame-ancestors"];
 
 function hardFloorProblems(label, csp, { headerCopy }) {
@@ -117,6 +117,7 @@ function hardFloorProblems(label, csp, { headerCopy }) {
   for (const [d, tokens] of Object.entries(csp)) {
     for (const t of tokens) {
       if (t === "'unsafe-inline'") problems.push(`${label}: ${d} contains 'unsafe-inline'`);
+      if (t === "'unsafe-eval'") problems.push(`${label}: ${d} contains 'unsafe-eval' (the site uses Alpine's CSP build, which doesn't need it)`);
       if (t === "*") problems.push(`${label}: ${d} contains the wildcard source "*"`);
       else if (/^[a-z][a-z0-9+.-]*:$/i.test(t)) problems.push(`${label}: ${d} contains the scheme-wide source "${t}" (allows any host)`);
     }
