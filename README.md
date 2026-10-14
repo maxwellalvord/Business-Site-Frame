@@ -10,8 +10,8 @@ Includes a mobile nav, an "Open now" hours widget, an FAQ accordion, a menu / ga
 
 - **No build step.** Plain HTML, CSS and JavaScript, with Alpine self-hosted in `site/js/vendor/`. Open `site/index.html` and it runs, offline.
 - **A strict Content-Security-Policy.** The site uses Alpine's CSP build, so the policy needs no `'unsafe-eval'` and no `'unsafe-inline'`. Security headers, including HSTS and a ban on framing, ship in `_headers`.
-- **Automated browser tests.** 227 checks in headless Chrome cover every component from `file://`, from a local server and with the real headers applied, plus a keyboard-only walk, and prove that the policy blocks `eval`.
-- **Client sites are checked against the template.** `--client` mode compares a client's copy of the site with the template's security policy, and fails on any weakening that isn't passed as an explicit, recorded exception.
+- **Automated browser tests.** 227 automated checks, run with headless Chrome, cover every component from `file://`, from a local server and with the real headers applied, plus a keyboard-only walk, and prove that the policy blocks `eval`.
+- **Client sites are checked against the template.** `--client` mode compares a client's copy of the site with the template's security policy, and fails on any change to its security policy that isn't passed as an explicit, recorded exception.
 - **"Open now" in the business's time zone**, including hours that run past midnight.
 - **Failures are visible.** The contact form shows an error instead of a fake "Thanks!" when it can't send, and a mistake in the config stops only the part of the page it affects.
 
