@@ -4,6 +4,25 @@ A reusable one-page starter for local businesses, built with [Alpine.js](https:/
 
 Includes a mobile nav, an "Open now" hours widget, an FAQ accordion, a menu / gallery section with a lightbox, and a validated contact form.
 
+**Status:** pre-1.0. The final launch checks are in progress; see the [CHANGELOG](CHANGELOG.md).
+
+## Highlights
+
+- **No build step.** Plain HTML, CSS and JavaScript, with Alpine self-hosted in `site/js/vendor/`. Open `site/index.html` and it runs, offline.
+- **A strict Content-Security-Policy.** The site uses Alpine's CSP build, so the policy needs no `'unsafe-eval'` and no `'unsafe-inline'`. Security headers, including HSTS and a ban on framing, ship in `_headers`.
+- **Automated browser tests.** 227 checks in headless Chrome cover every component from `file://`, from a local server and with the real headers applied, plus a keyboard-only walk, and prove that the policy blocks `eval`.
+- **Client sites are checked against the template.** `--client` mode compares a client's copy of the site with the template's security policy, and fails on any weakening that isn't passed as an explicit, recorded exception.
+- **"Open now" in the business's time zone**, including hours that run past midnight.
+- **Failures are visible.** The contact form shows an error instead of a fake "Thanks!" when it can't send, and a mistake in the config stops only the part of the page it affects.
+
+## Try it
+
+```sh
+git clone https://github.com/maxwellalvord/Business-Site-Frame.git
+```
+
+Then open `site/index.html` in a browser. Nothing to install, and it works offline. On `file://` the contact form logs submissions to the browser console instead of sending them. To use a local server instead, see [Run it](#run-it).
+
 ## Screenshots
 
 The template as it ships, filled in for a sample coffee shop, "Harbor & Pine".
@@ -121,6 +140,7 @@ tests/site-policy.mjs    File checks for a site folder: headers, CSP, contents, 
 CHANGELOG.md             Template releases; security-relevant changes are marked (not deployed)
 screenshots/             Images used in this README (not deployed)
 README.md                This file (not deployed)
+LICENSE                  MIT license (not deployed)
 ```
 
 ## Tests
@@ -132,7 +152,13 @@ node tests/browser-test.mjs            # the whole site, in headless Chrome
 node --test tests/hours.test.mjs       # the opening-hours calculations (Node only, no browser)
 ```
 
-If Chrome isn't at the default Windows location, set `CHROME_PATH` to its executable first. The tests open the site from `file://`, from a local server and from a server that sends the `_headers` headers, and they exercise every component, the contact form's failure paths and the deployment layout. They also fail if a byte of the self-hosted Alpine files changes, or if the two copies of the Content-Security-Policy drift apart. And they build deliberately weakened copies of the site, to prove that the client checks below catch each weakening.
+The script looks for Chrome at its default Windows location. On macOS and Linux, or if Chrome is installed elsewhere, set `CHROME_PATH` to its executable first, for example:
+
+```sh
+CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" node tests/browser-test.mjs
+```
+
+The tests open the site from `file://`, from a local server and from a server that sends the `_headers` headers, and they exercise every component, the contact form's failure paths and the deployment layout. They also fail if a byte of the self-hosted Alpine files changes, or if the two copies of the Content-Security-Policy drift apart. And they build deliberately weakened copies of the site, to prove that the client checks below catch each weakening.
 
 They also break `site-config.js` on purpose (a bad time, a misspelled time zone, a syntax error, a missing file) and check that only the affected part of the page stops, with one clear message in the console. The contact form must keep working in every case.
 
@@ -142,18 +168,7 @@ They also break `site-config.js` on purpose (a bad time, a misspelled time zone,
 node tests/browser-test.mjs --client path/to/client-site
 ```
 
-This mode skips the checks that depend on the sample menu, photos and FAQ, so it works with any client's content. It checks that:
-
-- **The security policy matches the template's.** The client's `_headers` and CSP are compared with the template's own `site/` folder. The only difference accepted without comment is the form endpoint's origin in `connect-src`. Every security header must be present with the template's value; HSTS may add `includeSubDomains`. Security headers may only be set in the `/*` block (unless passed with `--allow`, below).
-- **Some protections can never be relaxed in the site-wide policy:** no `'unsafe-inline'` or `'unsafe-eval'` (in any letter case), no `*` or scheme-wide sources such as `https:`, and `object-src`, `base-uri` and `frame-ancestors` stay `'none'`.
-- **The CSP `<meta>` tags are the ones the browser applies.** `index.html` and `404.html` each have exactly one, outside HTML comments, and no directive appears twice in any copy (browsers use only the first). The tags are also read from each page as Chrome loads it, and the run fails if that reading differs from the file's, if a tag is outside `<head>`, or if a script on the page changes or removes a `<meta>` tag.
-- **`404.html` keeps its own, stricter policy:** the same hard limits, compared with the template's `404.html`.
-- **`formEndpoint` appears exactly once in `site-config.js`.** Its value is read from the page as Chrome loads it, so a commented-out old endpoint doesn't count, and a second mention fails the run. The client's files only ever run inside the browser, never on your machine directly.
-- **`_redirects` stays on the site:** no rule may point to another host, and no rule may use status `200` (a rewrite, or on Netlify a proxy, which would serve another host's content as the site's own).
-- **The folder holds only the site:** `index.html`, `404.html`, `_headers`, `_redirects`, `css/`, `js/` and `images/`. No dotfiles (`.git/`, `.env`), notes, backups or source maps; images are image files; SVGs contain no `<script>` tags or `on…=` event attributes.
-- **The Alpine files are the verified ones**, byte for byte.
-- **The client's form setup is right:** `formEndpoint` is a public `https://` URL with no credentials, and its origin is in `connect-src` in both CSP copies.
-- **The page loads cleanly** with the headers applied: no CSP violations, no console errors or warnings, and no requests to other hosts except those passed with `--allow`.
+This mode skips the checks that depend on the sample menu, photos and FAQ, so it works with any client's content. It compares the client's CSP and security headers with the template's own `site/` folder, and enforces limits that can never be relaxed, such as no `'unsafe-inline'`, no `'unsafe-eval'` and no `*` or scheme-wide sources. It also checks that the CSP `<meta>` tags Chrome reads from each page match the files, that the folder holds only the site, that the Alpine files are the verified ones, that the form endpoint is set up correctly, and that the page loads with no CSP violations, console errors, or requests to other hosts beyond the `--allow` exceptions below. The full list, and what client mode doesn't check yet, is in [What client mode guarantees](docs/ALPINE-APP-DOCUMENTATION.md#what-client-mode-guarantees).
 
 **Exceptions.** If a client genuinely needs something the template doesn't allow, such as a web-font host, pass it explicitly and record it, with the reason, in the client register:
 
@@ -165,3 +180,11 @@ node tests/browser-test.mjs --client path/to/client-site --allow "header /images
 `--allow` can be repeated. A difference that isn't passed this way fails the run, and so does an `--allow` that isn't needed. A CSP exception can only add host sources such as `https://fonts.gstatic.com`. Keywords (`'unsafe-hashes'`, `'strict-dynamic'` and so on), schemes and `*` are rejected: they need a change to the template itself. A `header` exception allows that header in that path's block, but its value isn't checked yet, so review it by hand.
 
 **The tests never contact anything outside your machine.** The form tests swap in a fake endpoint, and every request from a test page to another host is either answered by the test itself or blocked. Running the tests never sends anything to the client's real form provider.
+
+## License
+
+[MIT](LICENSE).
+
+## Author
+
+Made by [maxwellalvord](https://github.com/maxwellalvord).
