@@ -290,7 +290,7 @@ Defined in [site/js/site-config.js](../site/js/site-config.js). Components read 
 
 **`formEndpoint` appears once.** The tests read the endpoint from `window.SITE.formEndpoint` in the page Chrome has loaded, after `site-config.js` has run there, so commented-out lines don't count. They also fail unless the word `formEndpoint` appears in the file **exactly once, comments included**. That part reads the file as text. So a commented-out old endpoint, a second assignment later in the file, or even a comment that mentions the name all fail the run. Keep one `formEndpoint: "…"` line and nothing else that names it. The tests also fail if `formEndpoint` is missing from the loaded page or isn't a string; the message then lists any script errors the page reported.
 
-The tests never run `site-config.js`, or any other file from the site folder, in Node. A site's scripts only run in the pages the tests load in headless Chrome, as on a real visit, with requests to other hosts blocked (see [§10](#10-testing)).
+The policy checks never run `site-config.js`, or any other file from the site folder, in Node. Instead, they read what they need from the pages the tests load in headless Chrome, where a site's scripts run as on a real visit, with requests to other hosts blocked (see [§10](#10-testing)).
 
 > **Everything in `site/` is public**, including this file. Never put API keys, tokens or passwords in `site-config.js` or anywhere else in `site/`. Use only the provider's public form URL. If a provider requires a secret key, it needs a server-side function, not this template. The same rule is in a comment at the top of `site-config.js`, in the README reuse steps and in the pre-launch checklist.
 >
@@ -766,7 +766,7 @@ node tests/browser-test.mjs --client path/to/client-site      # client mode: a c
 node --test tests/hours.test.mjs                              # the opening-hours helpers (Node only, no browser)
 ```
 
-[tests/browser-test.mjs](../tests/browser-test.mjs) drives headless Chrome through the Chrome DevTools Protocol. Its file-based checks (headers, CSP, folder contents, vendor hashes) live in [tests/site-policy.mjs](../tests/site-policy.mjs), which it imports. Those checks only read the site's files as text; nothing from the site folder runs in Node. What only a browser can tell (the CSP `<meta>` tags it applied, and `formEndpoint` after `site-config.js` has run) is read from the pages loaded in Chrome and passed to them. If that reading is missing, those checks fail rather than pass. [tests/hours.test.mjs](../tests/hours.test.mjs) loads the template's own `components.js` into a separate Node context with a stub `document` and tests the hours helpers directly.
+[tests/browser-test.mjs](../tests/browser-test.mjs) drives headless Chrome through the Chrome DevTools Protocol. Its file-based checks (headers, CSP, folder contents, vendor hashes) live in [tests/site-policy.mjs](../tests/site-policy.mjs), which it imports. Those checks only read the site's files as text; nothing from the site folder runs in Node in these checks. What only a browser can tell (the CSP `<meta>` tags it applied, and `formEndpoint` after `site-config.js` has run) is read from the pages loaded in Chrome and passed to them. If that reading is missing, those checks fail rather than pass. [tests/hours.test.mjs](../tests/hours.test.mjs) loads the template's own `components.js` into a separate Node context with a stub `document` and tests the hours helpers directly.
 
 - **Requirements:** Node 22+, and Google Chrome for the browser tests. The script uses the default Windows install path. On macOS and Linux, or if Chrome is installed elsewhere, set **`CHROME_PATH`** to your Chrome or Chromium executable, for example:
   ```sh
@@ -852,7 +852,7 @@ node tests/browser-test.mjs --client path/to/client-site --allow "header /images
 | --- | --- | --- |
 | `node tests/browser-test.mjs` (template mode) | **227 / 227** | 2026-10-14 |
 | `node --test tests/hours.test.mjs` | **16 / 16** | 2026-10-14 |
-| `node tests/browser-test.mjs --client …` on a fresh, correctly configured client copy of `site/` | **41 / 41**, before the browser reading of the `<meta>` tags was added. Not yet recorded with the current checks. | 2026-09-30 |
+| `node tests/browser-test.mjs --client …` on a fresh, correctly configured client copy of `site/` | **42 / 42** | 2026-10-14 |
 
 ### Not covered by automated tests
 
