@@ -821,6 +821,7 @@ What it **doesn't** guarantee yet:
 - **A security header allowed for another path** with `--allow "header …"` isn't checked: not its value, and not the CSP hard limits.
 - **An `--allow` source may still use `http://`.**
 - **SVG content** beyond `<script` and `on…=` (for example a `javascript:` link) isn't checked. The site's CSP still blocks scripts in SVGs served from the site.
+- **Where the CSP `<meta>` tag sits in `<head>` isn't checked.** The browser applies its policy only from that point on, so a script placed above the tag runs without it, and the run still passes. On a host that applies `_headers`, the header policy still covers that script; on a host without `_headers`, nothing does. Keep the tag above every `<script>` and `<link>` in `<head>`, as the template has it.
 
 It checks the **files**. It doesn't replace the pre-launch checklist's live-URL checks: a header scan, the 404s, and a real test submission. A client copy made from an older template release can fail when the template's checks get stricter. That's deliberate: an outdated site can't pass the checklist unnoticed.
 
@@ -874,6 +875,6 @@ Before release **1.0.0** is tagged:
 - deploy the sample site as a live demo and staging site, and check it: a header scan, the 404s, and a real test submission
 - a manual autofill test of the honeypot (see [§10](#not-covered-by-automated-tests))
 - a manual screen-reader pass of the accessibility list in [§7](#7-accessibility-built-into-the-components)
-- close the gaps listed under [What client mode guarantees](#what-client-mode-guarantees): pin the template's own policy in the tests, check the value of per-path header exceptions, reject `http://` in `--allow`, and widen the SVG check. The folder list will also accept `favicon.ico`, `robots.txt`, `sitemap.xml`, `site.webmanifest` and `.well-known/security.txt`. These sections change when that lands.
+- close the gaps listed under [What client mode guarantees](#what-client-mode-guarantees): pin the template's own policy in the tests, check the value of per-path header exceptions, reject `http://` in `--allow`, widen the SVG check, and check that the CSP `<meta>` tag comes before any script. The folder list will also accept `favicon.ico`, `robots.txt`, `sitemap.xml`, `site.webmanifest` and `.well-known/security.txt`. These sections change when that lands.
 
 Each later change ships as its own release with a `CHANGELOG.md` entry, and this document is updated in the same release.
