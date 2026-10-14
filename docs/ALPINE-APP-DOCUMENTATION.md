@@ -205,7 +205,7 @@ The policy now lives in **three** places:
 | `site/_headers` | HTTP header | Same as the `<meta>` tag, plus `frame-ancestors 'none'` and `upgrade-insecure-requests`, which only work as a header. |
 | `site/404.html` | `<meta>` tag | **Deliberately stricter**: `script-src 'none'`, `connect-src 'none'`, `form-action 'none'`. The 404 page has no scripts or form. |
 
-**`index.html` and `_headers` must stay in sync.** The tests check this: they parse both policies and fail unless every directive matches, except `frame-ancestors` and `upgrade-insecure-requests`, which must appear in `_headers` only. `404.html` isn't part of the comparison. The header policy is:
+**`index.html` and `_headers` must stay in sync.** The tests check this: they parse both policies and fail unless every directive matches, except `frame-ancestors` and `upgrade-insecure-requests`, which must appear in `_headers` only. `404.html` isn't compared with the other two, because it's stricter by design. Instead it's compared with the template's own `404.html`, and it has to stay within the same hard limits (below). The header policy is:
 
 ```
 default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self';
@@ -218,21 +218,27 @@ frame-ancestors 'none'; upgrade-insecure-requests
 - `connect-src` controls where the contact form may send data. See [Receive real form submissions](#8-common-tasks).
 - `img-src` is `'self'` only. **`data:` images are not allowed.**
 
-**How the tests read the policy.** They read `index.html` and `_headers` as text, with these rules, so the usual ways of leaving an old or second policy in the file fail the run:
+**How the tests read the policy.** They read `index.html`, `404.html` and `_headers` as text, with these rules, so the usual ways of leaving an old or second policy in the file fail the run:
 
-- HTML comments are removed before the `<meta>` tag is looked for, and **`index.html` must have exactly one** CSP `<meta>` tag outside comments. Don't keep an old copy commented out "for reference"; it fails the run.
+- HTML comments are removed before the `<meta>` tag is looked for, and **`index.html` and `404.html` must each have exactly one** CSP `<meta>` tag outside comments. Don't keep an old copy commented out "for reference"; it fails the run.
 - **A directive may appear only once in each copy.** Browsers use the first copy of a repeated directive and ignore the rest, so the tests check the first copy and fail on the repeat.
 - Keywords such as `'self'` and `'unsafe-inline'` are compared **in any letter case**, as browsers treat them.
 
-This is a text reading, not the browser's own. Markup written to hide a tag from it (an unusual comment form, a repeated attribute, or a copy inside `<template>` or `<noscript>`) can make the tests read a different `<meta>` policy from the one the browser applies. See [What it doesn't guarantee yet](#what-client-mode-guarantees).
+The text reading gives clear messages, but on its own it isn't the browser's reading: markup written to hide a tag from it (an unusual comment form, a repeated attribute, or a copy inside `<template>` or `<noscript>`) could make it find a different `<meta>` policy from the one the browser applies. So the tests also **load `index.html` and `404.html` in Chrome and read the CSP `<meta>` tags the browser applied**, and compare them with the text reading. The run fails if:
 
-**Hard limits.** The tests fail on any of these in the `index.html` `<meta>` tag or the `/*` block of `_headers`, in the template and in every client site. `--allow` can't add them:
+- the two readings differ (runs of spaces and line breaks count as one space);
+- a CSP `<meta>` tag is outside `<head>`, where browsers ignore it;
+- a script on the page changes an attribute of a `<meta>` tag, or removes one, after the page loaded it. A policy the browser has applied stays applied, so a script that rewrote the tag could otherwise make it look like the file's.
+
+The reading runs in an isolated part of the page that the page's own scripts can't reach. It covers the `<meta>` tags only: `_headers` is a plain text file, read as text.
+
+**Hard limits.** The tests fail on any of these in the `<meta>` tags of `index.html` and `404.html` or the `/*` block of `_headers`, in the template and in every client site. `--allow` can't add them:
 
 - `'unsafe-inline'` or `'unsafe-eval'`, in any letter case
 - the wildcard `*`, or a scheme-wide source such as `https:`, `http:`, `data:` or `blob:` (each allows any host or any inline content)
 - `object-src` or `base-uri` set to anything other than `'none'`, or (in `_headers`) `frame-ancestors` set to anything other than `'none'`
 
-These limits apply to the **site-wide** policy only. A CSP set in another path's block of `_headers` is not checked against them; see [Other headers](#other-headers-in-_headers).
+These limits apply to the pages' `<meta>` policies and the **site-wide** header policy only. A CSP set in another path's block of `_headers` is not checked against them; see [Other headers](#other-headers-in-_headers).
 
 So a design that needs an inline `data:` SVG icon in CSS can't simply add `data:` to `img-src`. Save the icon as a file in `images/` instead.
 
@@ -282,9 +288,9 @@ Defined in [site/js/site-config.js](../site/js/site-config.js). Components read 
 | `showcase.categories` | array of `{ name, items }` | `showcase` | Each category becomes a filter button. |
 | `formEndpoint` | string (full `https://` URL) | `contactForm` | Must be a full `https://` URL with a host and **no username or password**. Upper-case `HTTPS://` and surrounding spaces are accepted. Empty is **for local development only**: on `file://`/`localhost` submissions are logged to the console; on any other host the form shows its error message. Its origin must also be in the CSP `connect-src`. **The word `formEndpoint` must appear in the file exactly once** (see below). |
 
-**`formEndpoint` appears once.** The tests read the endpoint by running `site-config.js` in a separate Node context (Node's `vm` module) and taking `window.SITE.formEndpoint`, so commented-out lines don't count. They also fail unless the word `formEndpoint` appears in the file **exactly once, comments included**. So a commented-out old endpoint, a second assignment later in the file, or even a comment that mentions the name all fail the run. Keep one `formEndpoint: "…"` line and nothing else that names it. The tests also fail if the file can't be run, or if `formEndpoint` is missing or isn't a string.
+**`formEndpoint` appears once.** The tests read the endpoint from `window.SITE.formEndpoint` in the page Chrome has loaded, after `site-config.js` has run there, so commented-out lines don't count. They also fail unless the word `formEndpoint` appears in the file **exactly once, comments included**. That part reads the file as text. So a commented-out old endpoint, a second assignment later in the file, or even a comment that mentions the name all fail the run. Keep one `formEndpoint: "…"` line and nothing else that names it. The tests also fail if `formEndpoint` is missing from the loaded page or isn't a string; the message then lists any script errors the page reported.
 
-**That context is not a security sandbox:** code in the file runs on your machine with your user's rights whenever the tests run, in template and client mode. Read a client's `site-config.js` before testing a folder you didn't write yourself (from a previous developer or a host backup, for example).
+The tests never run `site-config.js`, or any other file from the site folder, in Node. A site's scripts only run in the pages the tests load in headless Chrome, as on a real visit, with requests to other hosts blocked (see [§10](#10-testing)).
 
 > **Everything in `site/` is public**, including this file. Never put API keys, tokens or passwords in `site-config.js` or anywhere else in `site/`. Use only the provider's public form URL. If a provider requires a secret key, it needs a server-side function, not this template. The same rule is in a comment at the top of `site-config.js`, in the README reuse steps and in the pre-launch checklist.
 >
@@ -719,14 +725,18 @@ So new code goes into `components.js` rather than a new script file. A new page 
 | Test `Alpine started` fails right after an upgrade | The `Alpine.version` checks in the tests still expect the old version. See step 6 of [Upgrading Alpine](#upgrading-alpine). |
 | A `[policy] the two CSP copies match` test fails and names a directive | `index.html` and `_headers` disagree on that directive. The output shows both values. Make the two copies match. |
 | A `[policy] CSP hard limits` test fails | A copy contains `'unsafe-inline'`, `'unsafe-eval'` (in any letter case), `*` or a scheme-wide source such as `https:` or `data:`, or `object-src`/`base-uri`/`frame-ancestors` isn't `'none'`. These can't be allowed; remove them. See [Hard limits](#content-security-policy). If the message says *(is "*")* but the directive looks right, check for a second copy of it earlier in the policy. |
-| `[policy] each CSP copy is written once…` fails: *"index.html must have exactly one Content-Security-Policy meta tag outside comments (found N)"* | `index.html` has no CSP `<meta>` tag, or more than one. Comments don't count. Keep exactly one, and delete any commented-out copies. |
+| `[policy] each CSP copy is written once…` fails: *"index.html must have exactly one Content-Security-Policy meta tag outside comments (found N)"* (or `404.html`) | That page has no CSP `<meta>` tag, or more than one. Comments don't count. Keep exactly one, and delete any commented-out copies. |
 | The same test fails: *"<copy>: <directive> appears more than once (browsers use only the first)"* | A directive is written twice in that copy. Browsers enforce only the first. Merge them into one. |
+| `[policy] the CSP meta tags the browser applies are the ones in the files…` fails: *"<page>: the browser reads a different Content-Security-Policy meta tag than the file shows (browser: …; file: …)"* | Chrome found a different `<meta>` policy from the one the tests read in the file's text: for example a tag hidden behind an unusual comment, a repeated `content` attribute, or a copy inside `<template>` or `<noscript>`. Keep one plain `<meta http-equiv="Content-Security-Policy" content="…">` tag in `<head>`, with no tricks around it. See [How the tests read the policy](#content-security-policy). |
+| The same test fails: *"<page>: a Content-Security-Policy meta tag is outside <head>, where browsers ignore it"* | Move the tag into `<head>`. |
+| The same test fails: *"<page>: a script changed the <attr> attribute of a <meta> tag after the page loaded it"* or *"…removed a <meta> tag…"* | A script on the page (often in `site-config.js` or `components.js`) edits or removes `<meta>` tags. The site's scripts must leave them alone. Find and remove that code. |
+| The same test fails: *"<page>: couldn't be read in the browser: …"* | The page didn't finish loading within 10 seconds, or Chrome couldn't open it. Check that the file exists and loads in a browser. |
 | `[policy] site-config.js sets formEndpoint exactly once` fails: *"site-config.js mentions formEndpoint N times…"* | A commented-out old endpoint, a second assignment, or a comment that mentions the name. Leave exactly one `formEndpoint: "…"` line. |
-| The same test fails: *"site-config.js couldn't be run: …"* or *"window.SITE.formEndpoint is missing"* / *"is not a string"* | The file has a syntax error, doesn't set `window.SITE`, or `formEndpoint` is missing or isn't a quoted string. |
+| The same test fails: *"window.SITE.formEndpoint is missing in the loaded page"* / *"is not a string…"* | The file has a syntax error, doesn't set `window.SITE`, or `formEndpoint` is missing or isn't a quoted string. Any script errors the page reported are listed in brackets after the message. |
 | `[policy] _redirects only redirects within the site…` fails: *"_redirects line N points to another host: …"* | A rule's target starts with `https://`, another scheme or `//`. Remove it. To send visitors elsewhere, link to the other site from the page. |
 | The same test fails: *"_redirects line N is a 200 rewrite or proxy: …"* | A rule uses status `200` or `200!`. Use a `301` redirect within the site, or remove it. See [`_redirects`](#_redirects). |
 | `[policy] every --allow exception is used` fails: *"--allow "…": "…" isn't a host source…"* | `--allow` was given a keyword (`'strict-dynamic'`, `'unsafe-hashes'`…), a bare scheme, `*`, a host with a `*`, or a host without a scheme. Only sources like `https://host.example` (optionally with a path) can be passed. Anything else needs a template change. |
-| `[policy] CSP matches the template…` fails: *"script-src adds "https://…", which the template doesn't have"* | The client's policy has a source the template doesn't. If it's intended, pass it with `--allow "<directive> <source>"` and record it in the client register. If not, remove it. |
+| `[policy] CSP matches the template…` fails: *"script-src adds "https://…", which the template doesn't have"* | The client's policy has a source the template doesn't. If it's intended, pass it with `--allow "<directive> <source>"` and record it in the client register. If not, remove it. A message starting `404.html:` means the 404 page's own policy was widened. It sends no requests, so the form endpoint's origin isn't accepted there either: keep its `connect-src 'none'`. |
 | The same test fails: *"default-src was removed"* (or another directive) | A whole directive is missing. Removing a source is fine; removing a directive isn't, because the browser then falls back to `default-src`. Put it back. |
 | `[policy] security headers present with the template's values` fails | A header in the `/*` block is missing or has a different value. Use the template's exact value (§2). |
 | `[policy] HSTS…` fails | `Strict-Transport-Security` is missing or shorter than a year, or isn't written exactly as `max-age=<seconds>` or `max-age=<seconds>; includeSubDomains`. In the template itself, it must be exactly `max-age=31536000`. |
@@ -756,9 +766,9 @@ node tests/browser-test.mjs --client path/to/client-site      # client mode: a c
 node --test tests/hours.test.mjs                              # the opening-hours helpers (Node only, no browser)
 ```
 
-[tests/browser-test.mjs](../tests/browser-test.mjs) drives headless Chrome through the Chrome DevTools Protocol. Its file-based checks (headers, CSP, folder contents, vendor hashes) live in [tests/site-policy.mjs](../tests/site-policy.mjs), which it imports. [tests/hours.test.mjs](../tests/hours.test.mjs) loads the template's own `components.js` into a separate Node context with a stub `document` and tests the hours helpers directly.
+[tests/browser-test.mjs](../tests/browser-test.mjs) drives headless Chrome through the Chrome DevTools Protocol. Its file-based checks (headers, CSP, folder contents, vendor hashes) live in [tests/site-policy.mjs](../tests/site-policy.mjs), which it imports. Those checks only read the site's files as text; nothing from the site folder runs in Node. What only a browser can tell (the CSP `<meta>` tags it applied, and `formEndpoint` after `site-config.js` has run) is read from the pages loaded in Chrome and passed to them. If that reading is missing, those checks fail rather than pass. [tests/hours.test.mjs](../tests/hours.test.mjs) loads the template's own `components.js` into a separate Node context with a stub `document` and tests the hours helpers directly.
 
-- **Requirements:** Node 22+, and Google Chrome for the browser tests. The script uses the default Windows install path unless you set **`CHROME_PATH`** to your Chrome or Chromium executable, for example:
+- **Requirements:** Node 22+, and Google Chrome for the browser tests. The script uses the default Windows install path. On macOS and Linux, or if Chrome is installed elsewhere, set **`CHROME_PATH`** to your Chrome or Chromium executable, for example:
   ```sh
   CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" node tests/browser-test.mjs
   ```
@@ -774,10 +784,10 @@ node --test tests/hours.test.mjs                              # the opening-hour
 | Components | ✓ | — | Hours badge and table, footer year, nav, filters, lightbox (focus trap, arrow keys, Esc), FAQ, validation messages, 50k-character paste, `maxlength`, honeypot, local console fallback, **no console warnings** (which is how a binding the CSP build can't read is caught). Runs from `file://`, a `localhost` server and a server sending the real `_headers`. |
 | Broken config | ✓ | — | `site-config.js` is broken six ways: a bad time, a misspelled time zone, an unknown day, `faqs` not a list, the file missing, and a syntax error. Each must give exactly one console message naming the problem and no uncaught exceptions. The affected part hides, and the nav, FAQ, menu and **contact form (validates and submits)** keep working. |
 | Keyboard walk | ✓ | — | The accessibility list in [§7](#7-accessibility-built-into-the-components), with real key presses: the full tab order, the honeypot never focused, the skip link, filters, lightbox, FAQ, form errors and focus, sending by keyboard, and the narrow-screen menu. |
-| Weakened copies | ✓ | — | Proves the client checks work. A correctly configured client copy must pass. Then 36 copies, each weakened one way, must **each fail with the specific problem it targets**: for example a wider `script-src`, a removed header, a short HSTS, `'unsafe-eval'` added back, a second `_headers` block, `.git/`, `.env`, a notes file, an SVG with a script, a changed vendor byte, a commented-out CSP tag above a widened real one, a repeated directive, a commented-out old `formEndpoint`, `'UNSAFE-INLINE'` in upper case, a keyword passed with `--allow`, and `_redirects` rules that proxy or redirect to another host. Five more checks cover `--allow`, and one checks that `formEndpoint` is read past a commented-out copy. |
+| Weakened copies | ✓ | — | Proves the client checks work. A correctly configured client copy must pass. Then 45 copies, each weakened one way, must **each fail with the specific problem it targets**: for example a wider `script-src`, a removed header, a short HSTS, `'unsafe-eval'` added back, a second `_headers` block, `.git/`, `.env`, a notes file, an SVG with a script, a changed vendor byte, a commented-out CSP tag above a widened real one, a repeated directive, a commented-out old `formEndpoint`, `'UNSAFE-INLINE'` in upper case, a keyword passed with `--allow`, and `_redirects` rules that proxy or redirect to another host. Nine of them target the browser reading and `404.html`: a weaker `<meta>` policy hidden from the text reading three ways (two `content` attributes; behind `<!--->` with the strict copy in `<template>`; behind `--!>` with the strict copy in `<noscript>`), a script that rewrites the applied tag to match the file, a tag moved into `<body>`, and a `404.html` with inline scripts allowed, with an outside `connect-src`, with no CSP tag, or with a hidden weaker tag. Each copy is served and read in Chrome like a client's site. Five more checks cover `--allow`, one checks that `formEndpoint` is read past a commented-out copy, and one adds code to `site-config.js` that would write a file if it ran in Node: the file must not appear, and the copy must still pass. |
 | Test server | ✓ | — | Path traversal returns 404, a malformed URL returns 400, and the server survives. This tests the harness itself. |
 | **Vendor files** | ✓ | ✓ | SHA-384 of each file matches `VENDOR_SHA384`, and `js/vendor/` holds only those files. |
-| **Policy** | ✓ | ✓ | The `_headers` structure; the security headers; HSTS; each CSP copy written once, with no directive repeated; `formEndpoint` set exactly once in `site-config.js`; the CSP [hard limits](#content-security-policy); the comparison with the template's policy; the two CSP copies matching; every `--allow` being a usable host source and actually used; and `_redirects` staying on the site. See below. |
+| **Policy** | ✓ | ✓ | The `_headers` structure; the security headers; HSTS; each CSP copy written once, with no directive repeated; the CSP `<meta>` tags Chrome applies in `index.html` and `404.html` being the ones in the files; `formEndpoint` set exactly once in `site-config.js` and read from the loaded page; the CSP [hard limits](#content-security-policy) in every copy, `404.html` included; the comparison with the template's policy (`404.html` with the template's `404.html`); `index.html` and `_headers` matching; every `--allow` being a usable host source and actually used; and `_redirects` staying on the site. See below. |
 | **Folder** | ✓ | ✓ | Only site files: see [Add a new file to the site](#8-common-tasks). |
 | **`eval` blocked** | ✓ | ✓ | A probe script, served by the test server and loaded by the page like its own scripts, tries `new Function()`. It must be **blocked** under the `index.html` policy and under the `_headers` policy. A control run with the policy switched off must report **allowed**, which shows the probe can tell the difference. |
 | **Contact-form security** | ✓ | ✓ | Empty endpoint on a live host → error; `http://` → error; credentials → rejected, nothing sent; endpoint missing from `connect-src` → blocked; working endpoint → trimmed payload, origin-only referrer; stalled endpoint → error after about 15 s; `HTTPS://` and leading space accepted; `https://` with no host rejected. |
@@ -793,15 +803,17 @@ The components, broken-config, keyboard and weakened-copy groups depend on the s
 
 A passing client run means the client's copy of `site/` has **the template's security policy, apart from the exceptions you passed and can see on the command line**:
 
-- **The policy is unambiguous as written:** exactly one CSP `<meta>` tag outside HTML comments, no directive repeated, keywords in any letter case. This is read from the file's text (see [How the tests read the policy](#content-security-policy)).
-- **The policy matches the template's.** Both CSP copies are compared, directive by directive, with the `site/` folder of the template checkout you run the tests from. The only difference accepted without `--allow` is the form endpoint's origin in `connect-src`. Removing a source is fine (it's stricter); removing a whole directive isn't.
-- **The hard limits hold in the site-wide policy** (the `<meta>` tag and the `/*` block), whatever `--allow` says: no `'unsafe-inline'`, no `'unsafe-eval'`, no `*` or scheme-wide sources, and `object-src`, `base-uri` and `frame-ancestors` stay `'none'`.
-- **The security headers** are in a single `/*` block, each set once, with the template's exact values. HSTS is at least a year and may add `includeSubDomains`. The test can't tell whether the subdomain check in the pre-launch checklist was actually done.
-- **`formEndpoint`** is set exactly once in `site-config.js`, read by running the file in Node (not a security sandbox; see [§3](#3-configuration-windowsite)).
-- **`_redirects`** has no rule to another host and no `200` rewrite.
-- **The folder holds only the site**, with no dotfiles, notes, backups, source maps or extra scripts. SVGs are checked for `<script` and `on…=` event attributes only.
-- **The Alpine files are the verified ones**, byte for byte, and **`eval` is blocked** by both policy copies.
-- **The form setup is right**, and **the page loads cleanly** with no outside requests except `--allow` origins.
+- **The policy matches the template's.** The client's CSP copies and `_headers` are compared, directive by directive and header by header, with the `site/` folder of the template checkout you run the tests from. The only difference accepted without `--allow` is the form endpoint's origin in `connect-src`. Removing a source is fine (it's stricter); removing a whole directive isn't. `index.html` and `_headers` must also match each other, apart from the header-only directives.
+- **The hard limits hold in every copy** (the `<meta>` tags of `index.html` and `404.html`, and the `/*` block of `_headers`), whatever `--allow` says: no `'unsafe-inline'` or `'unsafe-eval'` in any letter case, no `*` or scheme-wide sources such as `https:`, and `object-src`, `base-uri` and (in `_headers`) `frame-ancestors` stay `'none'`.
+- **The CSP `<meta>` tags are the ones the browser applies.** `index.html` and `404.html` each have exactly one, outside HTML comments, and no directive appears twice in any copy (browsers use only the first). The tags are also read from each page as Chrome loads it, and the run fails if that reading differs from the file's, if a tag is outside `<head>`, or if a script on the page changes or removes a `<meta>` tag (see [How the tests read the policy](#content-security-policy)).
+- **`404.html` keeps its own, stricter policy:** the same hard limits, and compared with the template's `404.html`. Sources passed with `--allow` are accepted there too, but the form endpoint's origin isn't.
+- **The security headers** are all present in a single `/*` block, each set once, with the template's exact values. HSTS is at least a year and may add `includeSubDomains`; the test can't tell whether the subdomain check in the pre-launch checklist was actually done. Security headers may only be set in the `/*` block, unless one is passed with `--allow "header …"` for another path.
+- **`formEndpoint` appears exactly once in `site-config.js`.** Its value is read from the page as Chrome loads it, so a commented-out old endpoint doesn't count, and a second mention fails the run. The client's files only ever run inside the browser, never in Node on your machine (see [§3](#3-configuration-windowsite)).
+- **The form setup is right:** `formEndpoint` is a public `https://` URL with no credentials, and its origin is in `connect-src` in both `index.html` and `_headers`.
+- **`_redirects` stays on the site:** no rule may point to another host, and no rule may use status `200` (a rewrite, or on Netlify a proxy, which would serve another host's content as the site's own; see [`_redirects`](#_redirects)).
+- **The folder holds only the site:** `index.html`, `404.html`, `_headers`, `_redirects`, `css/`, `js/` and `images/`, with the contents listed in [Add a new file to the site](#8-common-tasks). No dotfiles (`.git/`, `.env`), notes, backups, source maps or extra scripts; `images/` holds only image files, and SVGs are checked for `<script` and `on…=` event attributes only.
+- **The Alpine files are the verified ones**, byte for byte, and **`eval` is blocked** by both the `index.html` and `_headers` policies.
+- **The page loads cleanly** with the client's `_headers` applied: no CSP violations, no console errors or warnings, and no requests to other hosts except origins passed with `--allow`.
 
 What it **doesn't** guarantee yet:
 
@@ -809,9 +821,6 @@ What it **doesn't** guarantee yet:
 - **A security header allowed for another path** with `--allow "header …"` isn't checked: not its value, and not the CSP hard limits.
 - **An `--allow` source may still use `http://`.**
 - **SVG content** beyond `<script` and `on…=` (for example a `javascript:` link) isn't checked. The site's CSP still blocks scripts in SVGs served from the site.
-- **A `<meta>` policy hidden on purpose.** The `<meta>` tag is read from the file's text, not from the page the browser loads, so deliberately unusual markup can make the tests check a different policy from the one the browser applies. On a host that applies `_headers`, the header policy is enforced as well and still limits the page. On a host that doesn't, the `<meta>` tag is the only policy.
-- **`404.html`'s own CSP** isn't checked: not against the hard limits and not against the template's. Check by hand that it still has `script-src 'none'`, `connect-src 'none'` and `form-action 'none'`.
-- **Running `site-config.js` isn't isolated.** The tests run it in Node with your user's rights (see [§3](#3-configuration-windowsite)). Read it before testing a client folder you didn't write.
 
 It checks the **files**. It doesn't replace the pre-launch checklist's live-URL checks: a header scan, the 404s, and a real test submission. A client copy made from an older template release can fail when the template's checks get stricter. That's deliberate: an outdated site can't pass the checklist unnoticed.
 
@@ -839,20 +848,17 @@ node tests/browser-test.mjs --client path/to/client-site --allow "header /images
 
 ### Last recorded results
 
-Recorded on 2026-09-30 for the current template:
-
-| Run | Result |
-| --- | --- |
-| `node tests/browser-test.mjs` (template mode) | **216 / 216** |
-| `node --test tests/hours.test.mjs` | **16 / 16** |
-| `node tests/browser-test.mjs --client …` on a fresh, correctly configured client copy of `site/` | **41 / 41** |
+| Run | Result | Recorded |
+| --- | --- | --- |
+| `node tests/browser-test.mjs` (template mode) | **227 / 227** | 2026-10-14 |
+| `node --test tests/hours.test.mjs` | **16 / 16** | 2026-10-14 |
+| `node tests/browser-test.mjs --client …` on a fresh, correctly configured client copy of `site/` | **41 / 41**, before the browser reading of the `<meta>` tags was added. Not yet recorded with the current checks. | 2026-09-30 |
 
 ### Not covered by automated tests
 
 - **Browser autofill and password managers** leaving the honeypot empty (**required before launch**). Check by hand in Chrome, Edge, Safari, Firefox and 1Password or Bitwarden. After autofilling, run `document.getElementById('hp_field').value` in the console; it must be `""`.
 - **Headers and 404s on the real host** (**required before launch**). Deploy and check the live URL with a header scanner (e.g. securityheaders.com).
 - **What a screen reader announces.** The keyboard walk checks behaviour and ARIA attributes only (see [§7](#7-accessibility-built-into-the-components)).
-- **`404.html`'s own CSP.** It isn't compared with the other two copies (it's meant to be stricter), and no check reads it. See [What it doesn't guarantee yet](#what-client-mode-guarantees).
 
 After any change to `site/js/components.js`, `site/index.html`, `site/js/site-config.js`, the CSP or `site/js/vendor/`, run the tests and do a quick manual pass of every component with the console open.
 
@@ -868,6 +874,6 @@ Before release **1.0.0** is tagged:
 - deploy the sample site as a live demo and staging site, and check it: a header scan, the 404s, and a real test submission
 - a manual autofill test of the honeypot (see [§10](#not-covered-by-automated-tests))
 - a manual screen-reader pass of the accessibility list in [§7](#7-accessibility-built-into-the-components)
-- close the gaps listed under [What client mode guarantees](#what-client-mode-guarantees): read the `<meta>` policy from the page loaded in the browser, stop running `site-config.js` with your user's rights, check `404.html`'s own CSP, pin the template's own policy in the tests, check the value of per-path header exceptions, reject `http://` in `--allow`, and widen the SVG check. The folder list will also accept `favicon.ico`, `robots.txt`, `sitemap.xml`, `site.webmanifest` and `.well-known/security.txt`. These sections change when that lands.
+- close the gaps listed under [What client mode guarantees](#what-client-mode-guarantees): pin the template's own policy in the tests, check the value of per-path header exceptions, reject `http://` in `--allow`, and widen the SVG check. The folder list will also accept `favicon.ico`, `robots.txt`, `sitemap.xml`, `site.webmanifest` and `.well-known/security.txt`. These sections change when that lands.
 
 Each later change ships as its own release with a `CHANGELOG.md` entry, and this document is updated in the same release.
